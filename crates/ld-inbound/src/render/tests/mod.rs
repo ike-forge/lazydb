@@ -192,7 +192,7 @@ fn showing(page: Page) -> State {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        ld_domain::model::Statement::select_all("shop", "orders", &[]),
+        ld_domain::model::Statement::select_all(ld_domain::Engine::Postgres, "shop", "orders", &[]),
     );
     state.contents.page_ready(
         query,

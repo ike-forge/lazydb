@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::clock::Stamp;
-use crate::config::Config;
+use crate::config::{Config, ConnectionConfig};
 use crate::connection::{Connection, ConnectionState, SchemaState};
 use crate::contents::ContentsPanel;
 use crate::ddl::DdlPanel;
+use crate::engine::Engine;
 use crate::feedback::{Flash, Loader, Toast};
 use crate::geometry::Geometry;
 use crate::history::Histories;
@@ -115,6 +116,23 @@ impl State {
         self.focus() == Panel::Queries && self.queries.is_editing()
     }
 
+    /// The engine of the connection chosen or open; Postgres before one is.
+    #[must_use]
+    pub fn engine(&self) -> Engine {
+        let name = match &self.connection {
+            ConnectionState::Connected(connection) => &connection.name,
+            ConnectionState::Connecting { name, .. } => name,
+            ConnectionState::Unchosen
+            | ConnectionState::Disconnected
+            | ConnectionState::Failed(_) => return Engine::default(),
+        };
+        self.config
+            .connections
+            .iter()
+            .find(|entry| entry.name == *name)
+            .map_or_else(Engine::default, ConnectionConfig::engine)
+    }
+
     /// The safe default without a connection.
     #[must_use]
     pub const fn posture(&self) -> Posture {
@@ -172,7 +190,7 @@ impl State {
             .map(|key| key.names().map(str::to_owned).collect::<Vec<_>>())
             .unwrap_or_default();
 
-        Statement::select_all(&table.namespace, &table.table, &key)
+        Statement::select_all(self.engine(), &table.namespace, &table.table, &key)
     }
 
     /// The one answer to "which namespace is on screen", shared by completion

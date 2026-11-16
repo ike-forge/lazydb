@@ -262,7 +262,10 @@ fn the_catalog_read_is_one_entry_unless_its_queries_are_asked_for() {
             other => panic!("{other:?}"),
         })
         .collect();
-    assert_eq!(queries.len(), crate::introspection::ALL.len());
+    assert_eq!(
+        queries.len(),
+        crate::introspection::queries(crate::Engine::Postgres).len()
+    );
     assert_eq!(queries[0], "catalog: databases");
     assert!(
         shown.log.entries().nth(3).is_some_and(|entry| matches!(

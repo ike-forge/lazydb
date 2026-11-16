@@ -3,6 +3,7 @@
 
 use crate::cell;
 use crate::create::ident;
+use crate::engine::Engine;
 use crate::log::Entry;
 use crate::model::{ColumnDefault, Row, Table, Value};
 use crate::selection::Ranges;
@@ -33,7 +34,13 @@ pub fn grid_row(row: &Row) -> String {
 /// its value through `OVERRIDING SYSTEM VALUE`. `None` where no column of the
 /// page is the table's to write.
 #[must_use]
-pub fn inserts(namespace: &str, table: &Table, columns: &[String], rows: &[Row]) -> Option<String> {
+pub fn inserts(
+    engine: Engine,
+    namespace: &str,
+    table: &Table,
+    columns: &[String],
+    rows: &[Row],
+) -> Option<String> {
     let written: Vec<(usize, &crate::model::Column)> = columns
         .iter()
         .enumerate()
@@ -52,11 +59,11 @@ pub fn inserts(namespace: &str, table: &Table, columns: &[String], rows: &[Row])
     });
     let head = format!(
         "INSERT INTO {}.{} ({}){} VALUES",
-        ident(namespace),
-        ident(&table.name),
+        ident(engine, namespace),
+        ident(engine, &table.name),
         written
             .iter()
-            .map(|(_, column)| ident(&column.name))
+            .map(|(_, column)| ident(engine, &column.name))
             .collect::<Vec<_>>()
             .join(", "),
         if overriding {
@@ -73,7 +80,7 @@ pub fn inserts(namespace: &str, table: &Table, columns: &[String], rows: &[Row])
                     .iter()
                     .map(|(at, column)| {
                         let value = row.values.get(*at).unwrap_or(&Value::Null);
-                        crate::literal::of(&column.data_type, value)
+                        crate::literal::of(engine, &column.data_type, value)
                     })
                     .collect();
                 format!("{head} ({});", values.join(", "))
@@ -247,7 +254,7 @@ mod tests {
         ];
 
         assert_eq!(
-            inserts("shop", &orders(), &columns, &rows).as_deref(),
+            inserts(Engine::Postgres, "shop", &orders(), &columns, &rows).as_deref(),
             Some(
                 "INSERT INTO shop.\"Orders\" (id, note) VALUES (1, 'o''hara'::text);\n\
                  INSERT INTO shop.\"Orders\" (id, note) VALUES (2, NULL);"
@@ -264,14 +271,23 @@ mod tests {
         }];
 
         assert_eq!(
-            inserts("shop", &table, &["id".to_owned()], &rows).as_deref(),
+            inserts(Engine::Postgres, "shop", &table, &["id".to_owned()], &rows).as_deref(),
             Some("INSERT INTO shop.\"Orders\" (id) OVERRIDING SYSTEM VALUE VALUES (1);")
         );
     }
 
     #[test]
     fn a_page_holding_none_of_the_tables_writable_columns_yanks_nothing() {
-        assert_eq!(inserts("shop", &orders(), &["total".to_owned()], &[]), None);
+        assert_eq!(
+            inserts(
+                Engine::Postgres,
+                "shop",
+                &orders(),
+                &["total".to_owned()],
+                &[]
+            ),
+            None
+        );
     }
     use crate::clock::Stamp;
     use crate::log::{Outcome, Subject};

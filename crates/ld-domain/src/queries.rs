@@ -2,6 +2,7 @@
 //! together. [`Editor`] knows no schema.
 
 use crate::editor::{Editor, Position};
+use crate::engine::Engine;
 use crate::model::Key;
 use crate::sql::{Completion, Span, statements};
 
@@ -100,12 +101,27 @@ impl Default for Shown {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueriesPanel {
+    /// The buffer's language: the open connection's.
+    engine: Engine,
     buffer: Editor,
     completion: Option<Completion>,
     shown: Shown,
 }
 
 impl QueriesPanel {
+    #[must_use]
+    pub const fn engine(&self) -> Engine {
+        self.engine
+    }
+
+    /// The popup was computed in the other language.
+    pub fn speak(&mut self, engine: Engine) {
+        if self.engine != engine {
+            self.engine = engine;
+            self.completion = None;
+        }
+    }
+
     #[must_use]
     pub fn lines(&self) -> &[String] {
         self.buffer.lines()
@@ -201,7 +217,7 @@ impl QueriesPanel {
     /// Stops at either end, like any list cursor.
     pub fn step_statement(&mut self, forwards: bool) {
         let text = self.buffer.text();
-        let spans = statements(&text);
+        let spans = statements(self.engine, &text);
         let Some(at) = holding(&spans, self.buffer.offset()) else {
             return;
         };
@@ -212,14 +228,14 @@ impl QueriesPanel {
 
     pub fn edge_statement(&mut self, last: bool) {
         let text = self.buffer.text();
-        let spans = statements(&text);
+        let spans = statements(self.engine, &text);
         let target = if last { spans.len().wrapping_sub(1) } else { 0 };
 
         self.go_to(&spans, target);
     }
 
     fn span(&self, text: &str) -> Option<Span> {
-        let spans = statements(text);
+        let spans = statements(self.engine, text);
 
         spans.get(holding(&spans, self.buffer.offset())?).copied()
     }
@@ -251,7 +267,7 @@ impl QueriesPanel {
 
     /// `false` when nothing changed, so the press costs no frame.
     pub fn format(&mut self) -> bool {
-        let laid_out = crate::sql::format(&self.buffer.text());
+        let laid_out = crate::sql::format(self.engine, &self.buffer.text());
         if laid_out == self.buffer.text() {
             return false;
         }
@@ -457,7 +473,12 @@ mod tests {
         for character in text.chars() {
             let refresh = panel.edit(Key::Char(character), 1);
             assert_eq!(refresh, Some(Refresh::Recompute));
-            panel.offer(suggest(panel.buffer(), Some(&schema), Some("shop")));
+            panel.offer(suggest(
+                Engine::Postgres,
+                panel.buffer(),
+                Some(&schema),
+                Some("shop"),
+            ));
         }
 
         panel
@@ -544,7 +565,12 @@ mod tests {
         let mut panel = opened();
         panel.replace("SELECT *\nFROM shop.");
         assert_eq!(panel.edit(Key::Char('o'), 1), Some(Refresh::Recompute));
-        panel.offer(suggest(panel.buffer(), Some(&schema()), Some("shop")));
+        panel.offer(suggest(
+            Engine::Postgres,
+            panel.buffer(),
+            Some(&schema()),
+            Some("shop"),
+        ));
         let cursor = panel.cursor();
 
         assert_eq!(panel.edit(Key::Up, 1), Some(Refresh::Hold));

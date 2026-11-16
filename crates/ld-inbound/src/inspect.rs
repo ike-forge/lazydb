@@ -526,7 +526,13 @@ mod tests {
             Subject::Table(TableRef::new("shop", "orders")),
             cell(Value::Text("ada".to_owned())),
         );
-        let mut field = ld_domain::edit::Field::opened(0, "spec", "integer", "ada".to_owned());
+        let mut field = ld_domain::edit::Field::opened(
+            ld_domain::Engine::Postgres,
+            0,
+            "spec",
+            "integer",
+            "ada".to_owned(),
+        );
         field.line_mut().insert('!');
         inspector.start_edit(field);
         state.overlay = Some(Overlay::Inspect(inspector));

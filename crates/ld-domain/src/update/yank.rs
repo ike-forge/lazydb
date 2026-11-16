@@ -142,9 +142,13 @@ pub(super) fn yank_inserts(state: &mut State) -> Vec<Effect> {
         .filter(|(at, _)| rows.contains(*at))
         .map(|(_, row)| row)
         .collect();
-    let Some(sql) =
-        crate::yank::inserts(&table.namespace, described, &page.page().columns, &chosen)
-    else {
+    let Some(sql) = crate::yank::inserts(
+        state.engine(),
+        &table.namespace,
+        described,
+        &page.page().columns,
+        &chosen,
+    ) else {
         return Vec::new();
     };
 

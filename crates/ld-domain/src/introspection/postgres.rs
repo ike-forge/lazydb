@@ -1,6 +1,4 @@
-//! The queries that read a database's catalog, as data: the adapter runs them
-//! and maps their rows, and the Logs tab can show exactly what was asked
-//! (vision.md §4, principle 3). One query per kind of object.
+//! `pg_catalog`, read per database.
 
 /// System schemas, toast and other sessions' temporary schemas.
 macro_rules! user_schemas {

@@ -148,6 +148,7 @@ fn insert_statement(state: &State, form: &Inspector) -> Result<Statement, String
     }
 
     Ok(Statement::insert_row(
+        state.engine(),
         &table.namespace,
         &table.table,
         &values,

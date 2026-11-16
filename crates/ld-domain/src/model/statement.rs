@@ -1,12 +1,17 @@
-//! SQL statements as values: every action is shown before it runs (vision.md
-//! §4, principle 3).
+//! Statements as values, SQL or CQL by engine: every action is shown before it
+//! runs (vision.md §4, principle 3).
 
 use std::fmt::Write as _;
 
+use crate::create::ident;
+use crate::engine::Engine;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Statement {
+    /// The text sent, in the engine's language.
     pub sql: String,
     pub kind: StatementKind,
+    pub engine: Engine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,156 +43,141 @@ impl Statement {
         self.kind.mutates()
     }
 
-    /// Unbounded: the grid pages it and export streams it. Ordered by the
-    /// key when there is one, so `LIMIT/OFFSET` pages neither repeat nor skip
-    /// a row (architecture.md §6).
+    const fn built(engine: Engine, sql: String, kind: StatementKind) -> Self {
+        Self { sql, kind, engine }
+    }
+
+    /// Unbounded: the grid pages it and export streams it. Postgres orders by
+    /// the key when there is one, so `LIMIT/OFFSET` pages neither repeat nor
+    /// skip a row (architecture.md §6); Cassandra pages by its own state and
+    /// refuses an `ORDER BY` that spans partitions.
     #[must_use]
-    pub fn select_all(schema: &str, table: &str, key: &[String]) -> Self {
-        let ident = crate::create::ident;
-        let mut sql = format!("SELECT * FROM {}.{}", ident(schema), ident(table));
-        if !key.is_empty() {
-            let columns: Vec<String> = key.iter().map(|column| ident(column)).collect();
+    pub fn select_all(engine: Engine, schema: &str, table: &str, key: &[String]) -> Self {
+        let mut sql = format!(
+            "SELECT * FROM {}.{}",
+            ident(engine, schema),
+            ident(engine, table)
+        );
+        if engine == Engine::Postgres && !key.is_empty() {
+            let columns: Vec<String> = key.iter().map(|column| ident(engine, column)).collect();
             sql = format!("{sql} ORDER BY {}", columns.join(", "));
         }
-        Self {
-            sql,
-            kind: StatementKind::Read,
-        }
+        Self::built(engine, sql, StatementKind::Read)
     }
 
-    /// Quoted: a name read back from the cluster is only safe to interpolate
+    /// Quoted: a name read back from the server is only safe to interpolate
     /// quoted.
     #[must_use]
-    pub fn drop_table(namespace: &str, table: &str) -> Self {
-        Self {
-            sql: format!("DROP TABLE {}.{}", quoted(namespace), quoted(table)),
-            kind: StatementKind::Destructive,
-        }
+    pub fn drop_table(engine: Engine, namespace: &str, table: &str) -> Self {
+        Self::built(
+            engine,
+            format!("DROP TABLE {}.{}", quoted(namespace), quoted(table)),
+            StatementKind::Destructive,
+        )
     }
 
-    #[must_use]
-    /// Without `CASCADE`: Postgres refuses a schema that still holds
+    /// Postgres's without `CASCADE`: it refuses a schema that still holds
     /// anything, which is the confirmation a typed name cannot give.
-    pub fn drop_schema(schema: &str) -> Self {
-        Self {
-            sql: format!("DROP SCHEMA {}", quoted(schema)),
-            kind: StatementKind::Destructive,
-        }
+    #[must_use]
+    pub fn drop_schema(engine: Engine, schema: &str) -> Self {
+        let object = match engine {
+            Engine::Postgres => "SCHEMA",
+            Engine::Cassandra => "KEYSPACE",
+        };
+        Self::built(
+            engine,
+            format!("DROP {object} {}", quoted(schema)),
+            StatementKind::Destructive,
+        )
     }
 
     /// `key` arrives spelled by [`crate::literal`] in key order. `Write`, not
     /// `Destructive`, because `kind_of` classifies a typed `DELETE` so; its
     /// confirmation belongs to the key that opened it.
     #[must_use]
-    pub fn delete_row(namespace: &str, table: &str, key: &[(String, String)]) -> Self {
-        Self {
-            sql: format!(
-                "DELETE FROM {}.{} WHERE {}",
-                quoted(namespace),
-                quoted(table),
-                restriction(key)
-            ),
-            kind: StatementKind::Write,
-        }
+    pub fn delete_row(
+        engine: Engine,
+        namespace: &str,
+        table: &str,
+        key: &[(String, String)],
+    ) -> Self {
+        Self::built(engine, delete(namespace, table, key), StatementKind::Write)
     }
 
-    /// Logged: an unlogged batch that half-applies breaks the "3 rows" the
-    /// confirmation promised. A single key is a bare `DELETE`.
+    /// One unit: a failure part-way applies none of them, so the "3 rows" the
+    /// confirmation promised holds. A single key is a bare `DELETE`.
     #[must_use]
-    pub fn delete_rows(namespace: &str, table: &str, keys: &[Vec<(String, String)>]) -> Self {
+    pub fn delete_rows(
+        engine: Engine,
+        namespace: &str,
+        table: &str,
+        keys: &[Vec<(String, String)>],
+    ) -> Self {
         if let [only] = keys {
-            return Self::delete_row(namespace, table, only);
+            return Self::delete_row(engine, namespace, table, only);
         }
-
-        // One transaction: a failure part-way commits none of them.
-        let mut sql = "BEGIN;\n".to_owned();
-        for key in keys {
-            let _ = writeln!(
-                sql,
-                "DELETE FROM {}.{} WHERE {};",
-                quoted(namespace),
-                quoted(table),
-                restriction(key)
-            );
-        }
-        sql.push_str("COMMIT;");
-
-        Self {
-            sql,
-            kind: StatementKind::Write,
-        }
+        let members = keys.iter().map(|key| delete(namespace, table, key));
+        Self::built(engine, atomic(engine, members), StatementKind::Write)
     }
 
     /// `Write`, as `kind_of` classifies a typed `UPDATE`.
     #[must_use]
     pub fn update_row(
+        engine: Engine,
         namespace: &str,
         table: &str,
         sets: &[(String, String)],
         key: &[(String, String)],
     ) -> Self {
-        Self {
-            sql: format!(
-                "UPDATE {}.{} SET {} WHERE {}",
-                quoted(namespace),
-                quoted(table),
-                assignments(sets),
-                restriction(key)
-            ),
-            kind: StatementKind::Write,
-        }
+        Self::built(
+            engine,
+            update(namespace, table, sets, key),
+            StatementKind::Write,
+        )
     }
 
-    /// An omitted column takes its default, its identity or its generated value;
-    /// writing `NULL` would override all three.
+    /// An omitted column takes its default, identity or generated value in
+    /// Postgres and stays unset in Cassandra; writing `NULL` would override
+    /// the first and store a tombstone in the second.
     #[must_use]
-    pub fn insert_row(namespace: &str, table: &str, values: &[(String, String)]) -> Self {
+    pub fn insert_row(
+        engine: Engine,
+        namespace: &str,
+        table: &str,
+        values: &[(String, String)],
+    ) -> Self {
         let columns: Vec<String> = values.iter().map(|(column, _)| quoted(column)).collect();
         let literals: Vec<&str> = values.iter().map(|(_, literal)| literal.as_str()).collect();
 
-        Self {
-            sql: format!(
+        Self::built(
+            engine,
+            format!(
                 "INSERT INTO {}.{} ({}) VALUES ({})",
                 quoted(namespace),
                 quoted(table),
                 columns.join(", "),
                 literals.join(", ")
             ),
-            kind: StatementKind::Write,
-        }
+            StatementKind::Write,
+        )
     }
 
-    /// Logged, for [`Self::delete_rows`]' reason. A single row is a bare
+    /// One unit, for [`Self::delete_rows`]' reason. A single row is a bare
     /// `UPDATE`.
     #[must_use]
-    pub fn update_rows(namespace: &str, table: &str, rows: &[UpdatedRow]) -> Self {
+    pub fn update_rows(engine: Engine, namespace: &str, table: &str, rows: &[UpdatedRow]) -> Self {
         if let [(sets, key)] = rows {
-            return Self::update_row(namespace, table, sets, key);
+            return Self::update_row(engine, namespace, table, sets, key);
         }
-
-        // One transaction: a failure part-way commits none of them.
-        let mut sql = "BEGIN;\n".to_owned();
-        for (sets, key) in rows {
-            let _ = writeln!(
-                sql,
-                "UPDATE {}.{} SET {} WHERE {};",
-                quoted(namespace),
-                quoted(table),
-                assignments(sets),
-                restriction(key)
-            );
-        }
-        sql.push_str("COMMIT;");
-
-        Self {
-            sql,
-            kind: StatementKind::Write,
-        }
+        let members = rows
+            .iter()
+            .map(|(sets, key)| update(namespace, table, sets, key));
+        Self::built(engine, atomic(engine, members), StatementKind::Write)
     }
 
     /// Inside a transaction the user opened: the wrapping `COMMIT` would end
     /// theirs, so the rows join it instead. Only [`Self::delete_rows`] and
-    /// [`Self::update_rows`] wrap.
+    /// [`Self::update_rows`] wrap; a batch has no transaction to join.
     #[must_use]
     pub fn joining(self) -> Self {
         let sql = self
@@ -202,15 +192,51 @@ impl Statement {
     /// Every statement in the buffer is classified and the most restricted
     /// wins, so a `SELECT` ahead of a `DROP` cannot launder it.
     #[must_use]
-    pub fn typed(sql: &str) -> Self {
-        Self {
-            sql: sql.to_owned(),
-            kind: kind_of(sql),
-        }
+    pub fn typed(engine: Engine, sql: &str) -> Self {
+        Self::built(engine, sql.to_owned(), kind_of(engine, sql))
     }
 }
 
-/// The catalog reports true-case names, which Postgres would fold unquoted.
+/// Postgres's transaction or Cassandra's logged batch: either applies all of
+/// its members or none.
+fn atomic(engine: Engine, members: impl Iterator<Item = String>) -> String {
+    let (open, indent, close) = match engine {
+        Engine::Postgres => ("BEGIN;\n", "", "COMMIT;"),
+        Engine::Cassandra => ("BEGIN BATCH\n", "  ", "APPLY BATCH"),
+    };
+    let mut sql = open.to_owned();
+    for member in members {
+        let _ = writeln!(sql, "{indent}{member};");
+    }
+    sql.push_str(close);
+    sql
+}
+
+fn delete(namespace: &str, table: &str, key: &[(String, String)]) -> String {
+    format!(
+        "DELETE FROM {}.{} WHERE {}",
+        quoted(namespace),
+        quoted(table),
+        restriction(key)
+    )
+}
+
+fn update(
+    namespace: &str,
+    table: &str,
+    sets: &[(String, String)],
+    key: &[(String, String)],
+) -> String {
+    format!(
+        "UPDATE {}.{} SET {} WHERE {}",
+        quoted(namespace),
+        quoted(table),
+        assignments(sets),
+        restriction(key)
+    )
+}
+
+/// The catalog reports true-case names, which both engines fold unquoted.
 fn quoted(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -233,7 +259,7 @@ fn assignments(sets: &[(String, String)]) -> String {
 /// `BEGIN`, `START` and `SET` are not here: `BEGIN READ WRITE` and
 /// `SET default_transaction_read_only` would undo the read-only session that
 /// backs a read-only posture (architecture.md §4).
-const READING: &[&str] = &[
+const SQL_READING: &[&str] = &[
     "ABORT",
     "COMMIT",
     "END",
@@ -250,24 +276,40 @@ const READING: &[&str] = &[
 
 /// Gated by posture and typed confirmation. `DO` and `CALL` run code that may
 /// do anything, so they are confirmed as if they dropped something.
-const DESTRUCTIVE: &[&str] = &["CALL", "DO", "DROP", "TRUNCATE"];
+const SQL_DESTRUCTIVE: &[&str] = &["CALL", "DO", "DROP", "TRUNCATE"];
 
-const CATALOG: &[&str] = &[
+const SQL_CATALOG: &[&str] = &[
     "ALTER", "ANALYZE", "CLUSTER", "COMMENT", "CREATE", "GRANT", "REFRESH", "REINDEX", "REVOKE",
     "VACUUM",
 ];
 
 /// A word anywhere in a read that makes it a write: a data-modifying `WITH`,
 /// `SELECT … FOR UPDATE`, a function that changes settings.
-const WRITING: &[&str] = &["DELETE", "INSERT", "MERGE", "SET_CONFIG", "UPDATE"];
+const SQL_WRITING: &[&str] = &["DELETE", "INSERT", "MERGE", "SET_CONFIG", "UPDATE"];
 
-fn kind_of_statement(words: &[String]) -> StatementKind {
+const CQL_READING: &[&str] = &["DESC", "DESCRIBE", "LIST", "SELECT", "USE"];
+
+const CQL_DESTRUCTIVE: &[&str] = &["DROP", "TRUNCATE"];
+
+const CQL_CATALOG: &[&str] = &["ALTER", "CREATE", "GRANT", "REVOKE"];
+
+fn kind_of_statement(engine: Engine, words: &[String]) -> StatementKind {
     let Some(verb) = words.first().map(String::as_str) else {
         return StatementKind::Write;
     };
-    let writes = || words.iter().any(|word| WRITING.contains(&word.as_str()));
+    let (reading, destructive, catalog) = match engine {
+        Engine::Postgres => (SQL_READING, SQL_DESTRUCTIVE, SQL_CATALOG),
+        Engine::Cassandra => (CQL_READING, CQL_DESTRUCTIVE, CQL_CATALOG),
+    };
+    // CQL has no statement that writes from inside a read.
+    let writes = || {
+        engine == Engine::Postgres
+            && words
+                .iter()
+                .any(|word| SQL_WRITING.contains(&word.as_str()))
+    };
 
-    if verb == "EXPLAIN" {
+    if engine == Engine::Postgres && verb == "EXPLAIN" {
         // `EXPLAIN ANALYZE` runs what it explains; a plain one runs nothing.
         let analyzes = words
             .iter()
@@ -279,15 +321,15 @@ fn kind_of_statement(words: &[String]) -> StatementKind {
         };
     }
 
-    if READING.contains(&verb) {
+    if reading.contains(&verb) {
         if writes() {
             StatementKind::Write
         } else {
             StatementKind::Read
         }
-    } else if DESTRUCTIVE.contains(&verb) {
+    } else if destructive.contains(&verb) {
         StatementKind::Destructive
-    } else if CATALOG.contains(&verb) {
+    } else if catalog.contains(&verb) {
         StatementKind::Catalog
     } else {
         // Includes every verb this table has not learned.
@@ -307,10 +349,10 @@ const fn severity(kind: StatementKind) -> u8 {
 
 /// The most restricted statement decides. An empty buffer classifies as
 /// `Write`, like an unknown verb.
-fn kind_of(sql: &str) -> StatementKind {
-    crate::sql::statement_words(sql)
+fn kind_of(engine: Engine, sql: &str) -> StatementKind {
+    crate::sql::statement_words(engine, sql)
         .iter()
-        .map(|words| kind_of_statement(words))
+        .map(|words| kind_of_statement(engine, words))
         .max_by_key(|kind| severity(*kind))
         .unwrap_or(StatementKind::Write)
 }
@@ -322,11 +364,12 @@ mod tests {
     #[test]
     fn selecting_a_table_quotes_only_what_postgres_would_fold_and_orders_by_its_key() {
         assert_eq!(
-            Statement::select_all("shop", "orders", &[]).sql,
+            Statement::select_all(Engine::Postgres, "shop", "orders", &[]).sql,
             "SELECT * FROM shop.orders"
         );
         assert_eq!(
             Statement::select_all(
+                Engine::Postgres,
                 "Edge Cases",
                 "Mixed Case",
                 &["Id".to_owned(), "line".to_owned()]
@@ -340,7 +383,7 @@ mod tests {
     fn a_name_that_is_not_all_lower_case_survives_the_round_trip() {
         // Unquoted, Postgres would fold this to `myks`.
         assert_eq!(
-            Statement::select_all("MyKs", "Orders", &[]).sql,
+            Statement::select_all(Engine::Postgres, "MyKs", "Orders", &[]).sql,
             "SELECT * FROM \"MyKs\".\"Orders\""
         );
     }
@@ -352,22 +395,25 @@ mod tests {
 
     #[test]
     fn selecting_is_a_read_and_so_survives_a_read_only_connection() {
-        assert!(!Statement::select_all("shop", "orders", &[]).mutates());
+        assert!(!Statement::select_all(Engine::Postgres, "shop", "orders", &[]).mutates());
     }
 
     #[test]
     fn selecting_is_a_read() {
         assert_eq!(
-            Statement::typed("SELECT * FROM shop.orders").kind,
+            Statement::typed(Engine::Postgres, "SELECT * FROM shop.orders").kind,
             StatementKind::Read
         );
     }
 
     #[test]
     fn case_and_leading_space_do_not_change_a_kind() {
-        assert_eq!(Statement::typed("  select 1").kind, StatementKind::Read);
         assert_eq!(
-            Statement::typed("InSeRt INTO t (a) VALUES (1)").kind,
+            Statement::typed(Engine::Postgres, "  select 1").kind,
+            StatementKind::Read
+        );
+        assert_eq!(
+            Statement::typed(Engine::Postgres, "InSeRt INTO t (a) VALUES (1)").kind,
             StatementKind::Write
         );
     }
@@ -376,7 +422,7 @@ mod tests {
     fn dropping_and_truncating_are_destructive() {
         for sql in ["DROP TABLE shop.orders", "truncate shop.orders"] {
             assert_eq!(
-                Statement::typed(sql).kind,
+                Statement::typed(Engine::Postgres, sql).kind,
                 StatementKind::Destructive,
                 "{sql} must not reach the server without confirmation"
             );
@@ -386,19 +432,19 @@ mod tests {
     #[test]
     fn creating_and_altering_are_schema_changes() {
         assert_eq!(
-            Statement::typed("CREATE TABLE t (a int PRIMARY KEY)").kind,
+            Statement::typed(Engine::Postgres, "CREATE TABLE t (a int PRIMARY KEY)").kind,
             StatementKind::Catalog
         );
         assert_eq!(
-            Statement::typed("ALTER TABLE t ADD b int").kind,
+            Statement::typed(Engine::Postgres, "ALTER TABLE t ADD b int").kind,
             StatementKind::Catalog
         );
     }
 
     #[test]
     fn an_unknown_verb_is_treated_as_mutating() {
-        assert!(Statement::typed("REBUILD INDEX shop.orders").mutates());
-        assert!(Statement::typed("").mutates());
+        assert!(Statement::typed(Engine::Postgres, "REBUILD INDEX shop.orders").mutates());
+        assert!(Statement::typed(Engine::Postgres, "").mutates());
     }
 
     #[test]
@@ -407,7 +453,11 @@ mod tests {
             "-- what this does\nSELECT * FROM shop.orders",
             "/* what /* nested */ this does */ SELECT * FROM shop.orders",
         ] {
-            assert_eq!(Statement::typed(sql).kind, StatementKind::Read, "{sql}");
+            assert_eq!(
+                Statement::typed(Engine::Postgres, sql).kind,
+                StatementKind::Read,
+                "{sql}"
+            );
         }
     }
 
@@ -424,7 +474,7 @@ mod tests {
             "ROLLBACK",
         ] {
             assert!(
-                !Statement::typed(sql).mutates(),
+                !Statement::typed(Engine::Postgres, sql).mutates(),
                 "{sql} changes nothing and a read-only connection may run it"
             );
         }
@@ -441,7 +491,11 @@ mod tests {
             "RESET ALL",
             "SELECT set_config('default_transaction_read_only', 'off', false)",
         ] {
-            assert_eq!(Statement::typed(sql).kind, StatementKind::Write, "{sql}");
+            assert_eq!(
+                Statement::typed(Engine::Postgres, sql).kind,
+                StatementKind::Write,
+                "{sql}"
+            );
         }
     }
 
@@ -453,10 +507,14 @@ mod tests {
             "EXPLAIN ANALYZE UPDATE shop.orders SET total = 0",
             "EXPLAIN (ANALYZE) INSERT INTO shop.orders VALUES (1)",
         ] {
-            assert_eq!(Statement::typed(sql).kind, StatementKind::Write, "{sql}");
+            assert_eq!(
+                Statement::typed(Engine::Postgres, sql).kind,
+                StatementKind::Write,
+                "{sql}"
+            );
         }
         assert_eq!(
-            Statement::typed("EXPLAIN UPDATE shop.orders SET total = 0").kind,
+            Statement::typed(Engine::Postgres, "EXPLAIN UPDATE shop.orders SET total = 0").kind,
             StatementKind::Read,
             "without ANALYZE the update is only planned"
         );
@@ -465,12 +523,12 @@ mod tests {
     #[test]
     fn a_dollar_quoted_body_hides_no_statement_from_the_classifier() {
         assert_eq!(
-            Statement::typed("SELECT $$ ; DROP TABLE x $$").kind,
+            Statement::typed(Engine::Postgres, "SELECT $$ ; DROP TABLE x $$").kind,
             StatementKind::Read,
             "the body is a string, not a second statement"
         );
         assert_eq!(
-            Statement::typed("DO $$ BEGIN DELETE FROM t; END $$").kind,
+            Statement::typed(Engine::Postgres, "DO $$ BEGIN DELETE FROM t; END $$").kind,
             StatementKind::Destructive,
             "a block runs code, so it is confirmed"
         );
@@ -486,7 +544,11 @@ mod tests {
             "COPY shop.orders FROM STDIN",
             "LOCK TABLE shop.orders",
         ] {
-            assert_eq!(Statement::typed(sql).kind, StatementKind::Write, "{sql}");
+            assert_eq!(
+                Statement::typed(Engine::Postgres, sql).kind,
+                StatementKind::Write,
+                "{sql}"
+            );
         }
     }
 
@@ -505,7 +567,11 @@ mod tests {
             "VACUUM shop.orders",
             "REFRESH MATERIALIZED VIEW shop.v",
         ] {
-            assert_eq!(Statement::typed(sql).kind, StatementKind::Catalog, "{sql}");
+            assert_eq!(
+                Statement::typed(Engine::Postgres, sql).kind,
+                StatementKind::Catalog,
+                "{sql}"
+            );
         }
     }
 
@@ -523,7 +589,7 @@ mod tests {
             "CALL shop.purge()",
         ] {
             assert_eq!(
-                Statement::typed(sql).kind,
+                Statement::typed(Engine::Postgres, sql).kind,
                 StatementKind::Destructive,
                 "{sql} must not reach the server without confirmation"
             );
@@ -533,15 +599,27 @@ mod tests {
     #[test]
     fn a_buffer_takes_the_most_restricted_kind_in_it() {
         assert_eq!(
-            Statement::typed("SELECT * FROM shop.orders; DROP TABLE shop.orders").kind,
+            Statement::typed(
+                Engine::Postgres,
+                "SELECT * FROM shop.orders; DROP TABLE shop.orders"
+            )
+            .kind,
             StatementKind::Destructive
         );
         assert_eq!(
-            Statement::typed("SELECT * FROM shop.orders; UPDATE shop.orders SET a = 1").kind,
+            Statement::typed(
+                Engine::Postgres,
+                "SELECT * FROM shop.orders; UPDATE shop.orders SET a = 1"
+            )
+            .kind,
             StatementKind::Write
         );
         assert_eq!(
-            Statement::typed("CREATE TABLE t (a int PRIMARY KEY); SELECT * FROM t").kind,
+            Statement::typed(
+                Engine::Postgres,
+                "CREATE TABLE t (a int PRIMARY KEY); SELECT * FROM t"
+            )
+            .kind,
             StatementKind::Catalog
         );
     }
@@ -549,7 +627,11 @@ mod tests {
     #[test]
     fn a_semicolon_inside_a_string_does_not_open_a_statement() {
         assert_eq!(
-            Statement::typed("SELECT * FROM shop.orders WHERE note = '; DROP TABLE x'").kind,
+            Statement::typed(
+                Engine::Postgres,
+                "SELECT * FROM shop.orders WHERE note = '; DROP TABLE x'"
+            )
+            .kind,
             StatementKind::Read
         );
     }
@@ -557,7 +639,7 @@ mod tests {
     #[test]
     fn a_trailing_semicolon_adds_no_statement() {
         assert_eq!(
-            Statement::typed("SELECT * FROM shop.orders;\n").kind,
+            Statement::typed(Engine::Postgres, "SELECT * FROM shop.orders;\n").kind,
             StatementKind::Read
         );
     }
@@ -565,12 +647,13 @@ mod tests {
     #[test]
     fn the_cql_is_kept_verbatim() {
         let sql = "SELECT *\nFROM shop.orders";
-        assert_eq!(Statement::typed(sql).sql, sql);
+        assert_eq!(Statement::typed(Engine::Postgres, sql).sql, sql);
     }
 
     #[test]
     fn an_insert_quotes_the_names_and_is_a_write() {
         let stmt = Statement::insert_row(
+            Engine::Postgres,
             "My\"Ks",
             "orders",
             &[
@@ -589,11 +672,11 @@ mod tests {
 
     #[test]
     fn dropping_quotes_the_names_and_is_destructive() {
-        let table = Statement::drop_table("MyKs", "Orders");
+        let table = Statement::drop_table(Engine::Postgres, "MyKs", "Orders");
         assert_eq!(table.sql, "DROP TABLE \"MyKs\".\"Orders\"");
         assert_eq!(table.kind, StatementKind::Destructive);
 
-        let schema = Statement::drop_schema("MyKs");
+        let schema = Statement::drop_schema(Engine::Postgres, "MyKs");
         assert_eq!(schema.sql, "DROP SCHEMA \"MyKs\"");
         assert_eq!(schema.kind, StatementKind::Destructive);
     }
@@ -601,14 +684,14 @@ mod tests {
     #[test]
     fn a_built_statement_classifies_as_its_own_cql_would() {
         for built in [
-            Statement::drop_table("shop", "orders"),
-            Statement::drop_schema("shop"),
-            Statement::delete_row("shop", "orders", &key()),
-            Statement::update_row("shop", "orders", &sets(), &key()),
+            Statement::drop_table(Engine::Postgres, "shop", "orders"),
+            Statement::drop_schema(Engine::Postgres, "shop"),
+            Statement::delete_row(Engine::Postgres, "shop", "orders", &key()),
+            Statement::update_row(Engine::Postgres, "shop", "orders", &sets(), &key()),
         ] {
             assert_eq!(
                 built.kind,
-                Statement::typed(&built.sql).kind,
+                Statement::typed(Engine::Postgres, &built.sql).kind,
                 "{} classifies two ways",
                 built.sql
             );
@@ -627,6 +710,7 @@ mod tests {
     fn updating_a_row_sets_in_the_order_given_and_quotes_every_name() {
         assert_eq!(
             Statement::update_row(
+                Engine::Postgres,
                 "shop",
                 "orders",
                 &[
@@ -644,8 +728,8 @@ mod tests {
     #[test]
     fn one_updated_row_is_a_statement_and_several_are_a_batch() {
         assert_eq!(
-            Statement::update_rows("shop", "orders", &[(sets(), key())]).sql,
-            Statement::update_row("shop", "orders", &sets(), &key()).sql
+            Statement::update_rows(Engine::Postgres, "shop", "orders", &[(sets(), key())]).sql,
+            Statement::update_row(Engine::Postgres, "shop", "orders", &sets(), &key()).sql
         );
 
         let two = vec![
@@ -656,7 +740,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            Statement::update_rows("shop", "orders", &two).sql,
+            Statement::update_rows(Engine::Postgres, "shop", "orders", &two).sql,
             "BEGIN;\n\
              UPDATE \"shop\".\"orders\" SET \"note\" = 'x' WHERE \"id\" = 8f14e45f;\n\
              UPDATE \"shop\".\"orders\" SET \"qty\" = 7 WHERE \"id\" = c9f0f895;\n\
@@ -666,7 +750,7 @@ mod tests {
 
     #[test]
     fn an_update_is_a_write_a_read_only_connection_still_refuses() {
-        let stmt = Statement::update_row("shop", "orders", &sets(), &key());
+        let stmt = Statement::update_row(Engine::Postgres, "shop", "orders", &sets(), &key());
 
         assert_eq!(stmt.kind, StatementKind::Write);
         assert!(stmt.mutates());
@@ -676,6 +760,7 @@ mod tests {
     fn deleting_a_row_restricts_every_key_column_and_quotes_the_names() {
         assert_eq!(
             Statement::delete_row(
+                Engine::Postgres,
                 "shop",
                 "orders",
                 &[
@@ -690,7 +775,7 @@ mod tests {
 
     #[test]
     fn a_delete_is_a_write_rather_than_a_destructive_statement() {
-        let stmt = Statement::delete_row("shop", "orders", &key());
+        let stmt = Statement::delete_row(Engine::Postgres, "shop", "orders", &key());
 
         assert_eq!(stmt.kind, StatementKind::Write);
         assert!(stmt.mutates(), "a read-only connection still refuses it");
@@ -699,18 +784,83 @@ mod tests {
     #[test]
     fn one_key_is_a_statement_and_several_are_a_batch() {
         assert_eq!(
-            Statement::delete_rows("shop", "orders", &[key()]).sql,
-            Statement::delete_row("shop", "orders", &key()).sql,
+            Statement::delete_rows(Engine::Postgres, "shop", "orders", &[key()]).sql,
+            Statement::delete_row(Engine::Postgres, "shop", "orders", &key()).sql,
             "a batch of one is a batch the user has to read past"
         );
 
         let two = vec![key(), vec![("id".to_owned(), "c9f0f895".to_owned())]];
         assert_eq!(
-            Statement::delete_rows("shop", "orders", &two).sql,
+            Statement::delete_rows(Engine::Postgres, "shop", "orders", &two).sql,
             "BEGIN;\n\
              DELETE FROM \"shop\".\"orders\" WHERE \"id\" = 8f14e45f;\n\
              DELETE FROM \"shop\".\"orders\" WHERE \"id\" = c9f0f895;\n\
              COMMIT;"
+        );
+    }
+
+    #[test]
+    fn a_cassandra_scan_is_never_ordered_and_quotes_only_what_cql_would_fold() {
+        assert_eq!(
+            Statement::select_all(Engine::Cassandra, "shop", "Orders", &["id".to_owned()]).sql,
+            "SELECT * FROM shop.\"Orders\""
+        );
+    }
+
+    #[test]
+    fn a_keyspace_drops_as_one_and_several_rows_are_a_logged_batch() {
+        assert_eq!(
+            Statement::drop_schema(Engine::Cassandra, "shop").sql,
+            "DROP KEYSPACE \"shop\""
+        );
+        let keys = [
+            vec![("id".to_owned(), "1".to_owned())],
+            vec![("id".to_owned(), "2".to_owned())],
+        ];
+        let batch = Statement::delete_rows(Engine::Cassandra, "shop", "t", &keys);
+        assert_eq!(
+            batch.sql,
+            "BEGIN BATCH\n  DELETE FROM \"shop\".\"t\" WHERE \"id\" = 1;\n  DELETE FROM \"shop\".\"t\" WHERE \"id\" = 2;\nAPPLY BATCH"
+        );
+        assert_eq!(batch.kind, StatementKind::Write);
+        assert_eq!(
+            batch.clone().joining(),
+            batch,
+            "a batch joins no transaction"
+        );
+    }
+
+    #[test]
+    fn cql_reads_its_own_verbs() {
+        for cql in [
+            "SELECT * FROM t",
+            "USE shop",
+            "DESCRIBE TABLES",
+            "LIST ROLES",
+        ] {
+            assert_eq!(
+                Statement::typed(Engine::Cassandra, cql).kind,
+                StatementKind::Read,
+                "{cql}"
+            );
+        }
+        for (cql, kind) in [
+            (
+                "BEGIN BATCH INSERT INTO t (a) VALUES (1); APPLY BATCH",
+                StatementKind::Write,
+            ),
+            ("TRUNCATE t", StatementKind::Destructive),
+            (
+                "CREATE KEYSPACE k WITH replication = {}",
+                StatementKind::Catalog,
+            ),
+        ] {
+            assert_eq!(Statement::typed(Engine::Cassandra, cql).kind, kind, "{cql}");
+        }
+        assert_eq!(
+            Statement::typed(Engine::Postgres, "USE shop").kind,
+            StatementKind::Write,
+            "Postgres has no USE, so it is an unknown verb"
         );
     }
 }

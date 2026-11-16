@@ -110,7 +110,7 @@ fn a_typed_statement_has_no_table_to_update() {
     state.contents.requested(
         query,
         Subject::Typed("SELECT * FROM shop.orders".to_owned()),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -229,7 +229,7 @@ fn a_re_read_discards_the_uncommitted_edits() {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,

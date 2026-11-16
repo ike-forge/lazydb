@@ -616,7 +616,7 @@ fn body(state: &State, panel: Panel) -> PanelBody {
         Panel::Contents => contents::body(state),
         Panel::Queries => match state.queries.tab() {
             QueriesTab::Sql => PanelBody::Editor {
-                lines: crate::sql::highlight(&state.queries.text()),
+                lines: crate::sql::highlight(state.queries.engine(), &state.queries.text()),
                 cursor: state.queries.cursor(),
                 mode: state.queries.mode().unwrap_or_default(),
                 band: state.queries.band(),
@@ -804,7 +804,12 @@ mod tests {
         let mut state = tabled(&[("shop", &["orders"])]);
         state.queries.start_editing();
         state.queries.replace("SELECT i");
-        let completion = crate::sql::suggest(state.queries.buffer(), state.schema(), None);
+        let completion = crate::sql::suggest(
+            crate::Engine::Postgres,
+            state.queries.buffer(),
+            state.schema(),
+            None,
+        );
         state.queries.offer(completion);
 
         let PanelBody::Editor { completion, .. } = &body(&state, Panel::Queries) else {
@@ -1037,7 +1042,7 @@ mod tests {
         loading.contents.requested(
             query,
             Subject::Table(TableRef::new("shop", "orders")),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         let mut loaded = loading.clone();

@@ -134,7 +134,7 @@ fn editable(state: &State) -> Result<(Field, bool), String> {
             "{name} is part of the primary key. A key column cannot be updated."
         ));
     }
-    if !crate::edit::editable(&declared.data_type) {
+    if !crate::edit::editable(state.engine(), &declared.data_type) {
         return Err(format!(
             "A column of type {} cannot be edited here.",
             declared.data_type
@@ -155,7 +155,7 @@ fn editable(state: &State) -> Result<(Field, bool), String> {
         });
 
     Ok((
-        Field::opened(column, name, &declared.data_type, value),
+        Field::opened(state.engine(), column, name, &declared.data_type, value),
         declared.nullable,
     ))
 }
@@ -175,7 +175,12 @@ fn row_key(state: &State, described: &crate::model::Table) -> Option<RowKey> {
 
     // As the cluster sent it: a `WHERE` from an edited row would address a row
     // the cluster lacks.
-    RowKey::of(&key, &page.page().columns, page.row(inspector.row())?)
+    RowKey::of(
+        state.engine(),
+        &key,
+        &page.page().columns,
+        page.row(inspector.row())?,
+    )
 }
 
 pub(super) fn field_key(state: &mut State, key: Key) -> Vec<Effect> {

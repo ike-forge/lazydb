@@ -474,7 +474,7 @@ fn sentence(text: impl Into<String>) -> LogSubject {
 
 /// Token-based: whitespace collapses only between tokens, and comments drop.
 fn statement_subject(stmt: &Statement) -> LogSubject {
-    LogSubject::Statement(sql::issued(&stmt.sql))
+    LogSubject::Statement(sql::issued(stmt.engine, &stmt.sql))
 }
 
 /// Unwinds the overlay first: replacing a live prompt or theme picker outright

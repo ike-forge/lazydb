@@ -67,6 +67,7 @@ fn read(sql: &str) -> Statement {
     Statement {
         sql: sql.to_owned(),
         kind: StatementKind::Read,
+        engine: ld_domain::Engine::Postgres,
     }
 }
 
@@ -446,11 +447,13 @@ async fn every_value_read_back_spells_a_literal_postgres_finds_and_accepts() {
 
     for (at, column) in table.columns.iter().enumerate() {
         let value = &page.rows[0].values[at];
-        let literal = ld_domain::literal::of(&column.data_type, value);
-        let name = ld_domain::create::ident(&column.name);
+        let literal = ld_domain::literal::of(ld_domain::Engine::Postgres, &column.data_type, value);
+        let name = ld_domain::create::ident(ld_domain::Engine::Postgres, &column.name);
 
         // json has no `=`; floats are compared by `literal::key`'s refusal.
-        if column.data_type != "json" && ld_domain::literal::key(&column.data_type, value).is_some()
+        if column.data_type != "json"
+            && ld_domain::literal::key(ld_domain::Engine::Postgres, &column.data_type, value)
+                .is_some()
         {
             let found = query(
                 &db,
@@ -473,6 +476,7 @@ async fn every_value_read_back_spells_a_literal_postgres_finds_and_accepts() {
                         "BEGIN; UPDATE zoo.everything SET {name} = {literal} WHERE id = 1; ROLLBACK;"
                     ),
                     kind: StatementKind::Write,
+                    engine: ld_domain::Engine::Postgres,
                 },
             )
             .await;
@@ -488,11 +492,18 @@ async fn rows_yanked_as_inserts_recreate_themselves_in_a_copy() {
     let page = query(&db, "SELECT * FROM zoo.everything ORDER BY id").await;
     assert!(!page.rows.is_empty(), "the zoo is seeded");
     let copy = format!("yank_{}", std::process::id());
-    let inserts =
-        ld_domain::yank::inserts(&copy, table, &page.columns, &page.rows).expect("columns");
+    let inserts = ld_domain::yank::inserts(
+        ld_domain::Engine::Postgres,
+        &copy,
+        table,
+        &page.columns,
+        &page.rows,
+    )
+    .expect("columns");
     let write = |sql: String| Statement {
         sql,
         kind: StatementKind::Write,
+        engine: ld_domain::Engine::Postgres,
     };
 
     db.execute(
@@ -528,6 +539,7 @@ async fn the_probe_follows_a_transaction_through_open_failed_and_rolled_back() {
     let run = |sql: &str| Statement {
         sql: sql.to_owned(),
         kind: StatementKind::Write,
+        engine: ld_domain::Engine::Postgres,
     };
     let probed = async || db.transaction(conn()).await.expect("answers");
 

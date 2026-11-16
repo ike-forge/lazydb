@@ -1,11 +1,12 @@
 //! What the word under the cursor could become, from SQL's grammar and the
 //! loaded schema.
 
-use super::keywords::{COLUMN_WORDS, KEYWORDS, PROPERTIES, TYPES};
+use super::keywords;
 use super::lex::{Kind, Piece, pieces};
 use super::resolve::{Context, Expect, Name, context_at};
-use super::templates::{TEMPLATES, Template};
+use super::templates::{self, Template};
 use crate::editor::Editor;
+use crate::engine::Engine;
 use crate::model::{Catalog, Table};
 
 /// A cap, not a scroll: past this the prefix narrows the list.
@@ -138,6 +139,7 @@ impl Completion {
 /// completable.
 #[must_use]
 pub fn suggest(
+    engine: Engine,
     editor: &Editor,
     schema: Option<&Catalog>,
     namespace: Option<&str>,
@@ -150,9 +152,9 @@ pub fn suggest(
     }
 
     let text = editor.text();
-    let scanned = pieces(&text);
+    let scanned = pieces(engine, &text);
     let offset = editor.offset();
-    let context = context_at(&scanned, offset);
+    let context = context_at(engine, &scanned, offset);
 
     let candidates = match (qualifier, context.expects) {
         (Some(qualifier), Expect::Column) => {
@@ -161,19 +163,19 @@ pub fn suggest(
         // `WHERE id = shop.` is a value, not a table.
         (Some(qualifier), Expect::Keyword | Expect::Table) => tables_of(schema, qualifier, prefix),
         (Some(_), _) => Vec::new(),
-        (None, Expect::Column) => columns(schema, &context, namespace, prefix),
-        (None, Expect::Table) => names_first(schema, namespace, prefix),
+        (None, Expect::Column) => columns(engine, schema, &context, namespace, prefix),
+        (None, Expect::Table) => names_first(engine, schema, namespace, prefix),
         (None, Expect::Schema) => schemas(schema, prefix),
-        (None, Expect::Type) => types(prefix),
-        (None, Expect::Property) => properties(prefix),
+        (None, Expect::Type) => types(engine, prefix),
+        (None, Expect::Property) => properties(engine, prefix),
         // Keywords only: `LIMIT` and `ALLOW` follow a value, and `GRANT SEL`
         // types a permission.
         (None, Expect::Alias | Expect::Value | Expect::Nothing) => {
-            keywords(prefix).take(MOST).collect()
+            keywords(engine, prefix).take(MOST).collect()
         }
         (None, Expect::Keyword) => {
             let start = at_statement_start(&scanned, offset - word.chars().count());
-            unqualified(schema, namespace, prefix, start)
+            unqualified(engine, schema, namespace, prefix, start)
         }
     };
 
@@ -197,13 +199,14 @@ pub fn suggest(
 /// Grammar first: short prefixes mostly reach for keywords, and keywords do not
 /// depend on the panel.
 fn unqualified(
+    engine: Engine,
     schema: Option<&Catalog>,
     namespace: Option<&str>,
     prefix: &str,
     at_start: bool,
 ) -> Vec<Candidate> {
     let templates = if at_start {
-        templates(prefix)
+        templates(engine, prefix)
     } else {
         Vec::new()
     };
@@ -213,7 +216,7 @@ fn unqualified(
         .into_iter()
         .flat_map(|namespace| tables_of(schema, namespace, prefix));
 
-    ahead(keywords(prefix), templates)
+    ahead(keywords(engine, prefix), templates)
         .into_iter()
         .chain(schemas)
         .chain(tables)
@@ -230,8 +233,8 @@ fn ahead(leading: impl Iterator<Item = Candidate>, trailing: Vec<Candidate>) -> 
 }
 
 /// None once the opening keyword is typed in full.
-fn templates(prefix: &str) -> Vec<Candidate> {
-    TEMPLATES
+fn templates(engine: Engine, prefix: &str) -> Vec<Candidate> {
+    templates::of(engine)
         .iter()
         .filter(|template| {
             template.keyword().len() > prefix.len() && matches(template.keyword(), prefix)
@@ -241,8 +244,9 @@ fn templates(prefix: &str) -> Vec<Candidate> {
 }
 
 /// `INSERT` and `INTO` share a prefix with `INT` but are not types.
-fn types(prefix: &str) -> Vec<Candidate> {
-    TYPES
+fn types(engine: Engine, prefix: &str) -> Vec<Candidate> {
+    keywords::of(engine)
+        .types
         .iter()
         .filter(|word| matches(word, prefix))
         .map(|word| Candidate::plain(*word, CandidateKind::Keyword))
@@ -251,8 +255,9 @@ fn types(prefix: &str) -> Vec<Candidate> {
 }
 
 /// Lower case, as Postgres spells them.
-fn properties(prefix: &str) -> Vec<Candidate> {
-    PROPERTIES
+fn properties(engine: Engine, prefix: &str) -> Vec<Candidate> {
+    keywords::of(engine)
+        .properties
         .iter()
         .filter(|word| matches(word, prefix))
         .map(|word| Candidate::plain(*word, CandidateKind::Property))
@@ -271,21 +276,27 @@ fn tables_of(schema: Option<&Catalog>, namespace: &str, prefix: &str) -> Vec<Can
         .collect()
 }
 
-fn names_first(schema: Option<&Catalog>, namespace: Option<&str>, prefix: &str) -> Vec<Candidate> {
+fn names_first(
+    engine: Engine,
+    schema: Option<&Catalog>,
+    namespace: Option<&str>,
+    prefix: &str,
+) -> Vec<Candidate> {
     let tables = namespace
         .into_iter()
         .flat_map(|namespace| tables_of(schema, namespace, prefix));
 
     tables
         .chain(schemas(schema, prefix))
-        .chain(keywords(prefix))
+        .chain(keywords(engine, prefix))
         .take(MOST)
         .collect()
 }
 
 /// Every position offers them: `SELECT id, fr` is how `FROM` gets typed.
-fn keywords(prefix: &str) -> impl Iterator<Item = Candidate> + '_ {
-    KEYWORDS
+fn keywords(engine: Engine, prefix: &str) -> impl Iterator<Item = Candidate> + '_ {
+    keywords::of(engine)
+        .keywords
         .iter()
         .filter(move |keyword| matches(keyword, prefix))
         .map(|keyword| Candidate::keyword(keyword))
@@ -313,8 +324,9 @@ fn schemas(schema: Option<&Catalog>, prefix: &str) -> Vec<Candidate> {
 }
 
 /// Columns lead wherever the position takes one; the grammar behind them is
-/// [`COLUMN_WORDS`], so `SELECT up` no longer offers `UPDATE`.
+/// the column words, so `SELECT up` no longer offers `UPDATE`.
 fn columns(
+    engine: Engine,
     schema: Option<&Catalog>,
     context: &Context,
     namespace: Option<&str>,
@@ -327,11 +339,12 @@ fn columns(
         tables => every_column(schema, prefix, tables.is_empty() && !context.table_clause),
     };
 
-    ahead(columns.into_iter(), column_words(prefix).collect())
+    ahead(columns.into_iter(), column_words(engine, prefix).collect())
 }
 
-fn column_words(prefix: &str) -> impl Iterator<Item = Candidate> + '_ {
-    COLUMN_WORDS
+fn column_words(engine: Engine, prefix: &str) -> impl Iterator<Item = Candidate> + '_ {
+    keywords::of(engine)
+        .column_words
         .iter()
         .filter(move |keyword| matches(keyword, prefix))
         .map(|keyword| Candidate::keyword(keyword))
@@ -593,7 +606,7 @@ mod tests {
     }
 
     fn offers(text: &str, namespace: Option<&str>) -> Vec<String> {
-        suggest(&typed(text), Some(&schema()), namespace)
+        suggest(Engine::Postgres, &typed(text), Some(&schema()), namespace)
             .map(|completion| {
                 completion
                     .candidates()
@@ -607,7 +620,8 @@ mod tests {
     #[test]
     fn a_name_or_a_keyword_labels_itself() {
         let schema = schema();
-        let completion = suggest(&typed("ord"), Some(&schema), Some("shop")).expect("offers");
+        let completion =
+            suggest(Engine::Postgres, &typed("ord"), Some(&schema), Some("shop")).expect("offers");
 
         for candidate in completion.candidates() {
             assert_eq!(
@@ -640,13 +654,21 @@ mod tests {
 
     #[test]
     fn nothing_is_offered_against_no_word_at_all() {
-        assert!(suggest(&typed("SELECT "), Some(&schema()), None).is_none());
-        assert!(suggest(&typed(""), Some(&schema()), None).is_none());
+        assert!(suggest(Engine::Postgres, &typed("SELECT "), Some(&schema()), None).is_none());
+        assert!(suggest(Engine::Postgres, &typed(""), Some(&schema()), None).is_none());
     }
 
     #[test]
     fn a_word_with_one_offer_that_is_itself_raises_no_popup() {
-        assert!(suggest(&typed("SELECT * FROM secrets.keys"), Some(&schema()), None).is_none());
+        assert!(
+            suggest(
+                Engine::Postgres,
+                &typed("SELECT * FROM secrets.keys"),
+                Some(&schema()),
+                None
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -677,7 +699,8 @@ mod tests {
     #[test]
     fn accepting_writes_the_candidate_over_the_word_it_was_offered_against() {
         let mut editor = typed("SELECT * FROM shop.order");
-        let completion = suggest(&editor, Some(&schema()), None).expect("two tables match");
+        let completion =
+            suggest(Engine::Postgres, &editor, Some(&schema()), None).expect("two tables match");
 
         completion.accept(&mut editor);
 
@@ -692,7 +715,7 @@ mod tests {
     #[test]
     fn accepting_a_keyword_writes_it_in_the_case_cql_is_read_in() {
         let mut editor = typed("se");
-        let completion = suggest(&editor, None, None).expect("SELECT matches");
+        let completion = suggest(Engine::Postgres, &editor, None, None).expect("SELECT matches");
 
         completion.accept(&mut editor);
 
@@ -702,7 +725,8 @@ mod tests {
     #[test]
     fn accepting_a_keyword_writes_the_space_the_word_after_it_needs() {
         let mut editor = typed("SELECT * fr");
-        let completion = suggest(&editor, Some(&schema()), Some("shop")).expect("FROM matches");
+        let completion = suggest(Engine::Postgres, &editor, Some(&schema()), Some("shop"))
+            .expect("FROM matches");
 
         completion.accept(&mut editor);
 
@@ -720,7 +744,7 @@ mod tests {
         editor.line_start();
         editor.right();
         editor.right();
-        let completion = suggest(&editor, None, None).expect("SELECT matches");
+        let completion = suggest(Engine::Postgres, &editor, None, None).expect("SELECT matches");
 
         completion.accept(&mut editor);
 
@@ -730,7 +754,8 @@ mod tests {
     #[test]
     fn accepting_a_type_writes_no_space() {
         let mut editor = typed("CREATE TABLE shop.t (id uui");
-        let completion = suggest(&editor, Some(&schema()), Some("shop")).expect("uuid matches");
+        let completion = suggest(Engine::Postgres, &editor, Some(&schema()), Some("shop"))
+            .expect("uuid matches");
 
         completion.accept(&mut editor);
 
@@ -747,7 +772,7 @@ mod tests {
         editor.line_start();
         editor.right();
         editor.right();
-        let completion = suggest(&editor, None, None).expect("SELECT matches");
+        let completion = suggest(Engine::Postgres, &editor, None, None).expect("SELECT matches");
 
         completion.accept(&mut editor);
 
@@ -756,7 +781,8 @@ mod tests {
 
     #[test]
     fn the_selection_is_a_ring() {
-        let mut completion = suggest(&typed("se"), None, None).expect("some keyword matches");
+        let mut completion =
+            suggest(Engine::Postgres, &typed("se"), None, None).expect("some keyword matches");
         let last = completion.candidates().len() - 1;
 
         completion.previous();
@@ -787,7 +813,8 @@ mod tests {
         for _ in 0.." FROM shop.orders".len() {
             editor.left();
         }
-        let completion = suggest(&editor, Some(&schema), Some("shop")).expect("offers");
+        let completion =
+            suggest(Engine::Postgres, &editor, Some(&schema), Some("shop")).expect("offers");
 
         assert_eq!(
             completion.candidates().first().map(|c| c.text.as_str()),
@@ -913,7 +940,8 @@ mod tests {
     fn a_select_list_with_no_table_offers_every_column_qualified() {
         let schema = schema();
         let mut editor = typed("SELECT i");
-        let mut completion = suggest(&editor, Some(&schema), Some("shop")).expect("offers");
+        let mut completion =
+            suggest(Engine::Postgres, &editor, Some(&schema), Some("shop")).expect("offers");
         let at = completion
             .candidates()
             .iter()
@@ -940,7 +968,8 @@ mod tests {
         for _ in 0..suffix.len() {
             editor.left();
         }
-        let completion = suggest(&editor, Some(&schema), Some("shop")).expect("offers");
+        let completion =
+            suggest(Engine::Postgres, &editor, Some(&schema), Some("shop")).expect("offers");
 
         let column = completion
             .candidates()
@@ -957,7 +986,13 @@ mod tests {
     #[test]
     fn a_select_list_leads_with_the_columns_even_where_it_names_no_table() {
         let schema = schema();
-        let completion = suggest(&typed("SELECT i"), Some(&schema), Some("shop")).expect("offers");
+        let completion = suggest(
+            Engine::Postgres,
+            &typed("SELECT i"),
+            Some(&schema),
+            Some("shop"),
+        )
+        .expect("offers");
 
         assert_eq!(
             completion.candidates().first().map(|c| c.kind),
@@ -1003,7 +1038,8 @@ mod tests {
     fn accepting_a_column_with_no_table_in_scope_writes_the_clause_that_puts_it_in_scope() {
         let schema = schema();
         let mut editor = typed("SELECT to");
-        let mut completion = suggest(&editor, Some(&schema), Some("shop")).expect("offers");
+        let mut completion =
+            suggest(Engine::Postgres, &editor, Some(&schema), Some("shop")).expect("offers");
         let at = completion
             .candidates()
             .iter()
@@ -1031,7 +1067,8 @@ mod tests {
         for _ in 0..tail.chars().count() {
             editor.left();
         }
-        let mut completion = suggest(&editor, Some(&schema), Some("shop")).expect("offers");
+        let mut completion =
+            suggest(Engine::Postgres, &editor, Some(&schema), Some("shop")).expect("offers");
         let at = completion
             .candidates()
             .iter()
@@ -1054,7 +1091,8 @@ mod tests {
         for _ in 0..tail.chars().count() {
             editor.left();
         }
-        let mut completion = suggest(&editor, Some(&schema), Some("shop")).expect("offers");
+        let mut completion =
+            suggest(Engine::Postgres, &editor, Some(&schema), Some("shop")).expect("offers");
         let at = completion
             .candidates()
             .iter()
@@ -1081,7 +1119,8 @@ mod tests {
         for _ in 0..suffix.chars().count() {
             editor.left();
         }
-        let mut completion = suggest(&editor, Some(&schema), Some("shop")).expect("offers");
+        let mut completion =
+            suggest(Engine::Postgres, &editor, Some(&schema), Some("shop")).expect("offers");
         let at = completion
             .candidates()
             .iter()
@@ -1097,7 +1136,7 @@ mod tests {
     }
 
     fn labels(text: &str, namespace: Option<&str>) -> Vec<String> {
-        suggest(&typed(text), Some(&schema()), namespace)
+        suggest(Engine::Postgres, &typed(text), Some(&schema()), namespace)
             .map(|completion| {
                 completion
                     .candidates()
@@ -1150,7 +1189,7 @@ mod tests {
     #[test]
     fn accepting_a_shape_types_it_whole_and_lands_on_its_first_hole() {
         let mut editor = typed("sel");
-        let mut completion = suggest(&editor, None, None).expect("offers");
+        let mut completion = suggest(Engine::Postgres, &editor, None, None).expect("offers");
         let at = completion
             .candidates()
             .iter()
@@ -1173,7 +1212,7 @@ mod tests {
     #[test]
     fn a_transaction_shape_is_written_across_the_lines_it_needs() {
         let mut editor = typed("beg");
-        let mut completion = suggest(&editor, None, None).expect("offers");
+        let mut completion = suggest(Engine::Postgres, &editor, None, None).expect("offers");
         let at = completion
             .candidates()
             .iter()
@@ -1224,8 +1263,13 @@ mod tests {
     #[test]
     fn a_cursor_after_from_offers_names_before_keywords() {
         let schema = schema();
-        let completion =
-            suggest(&typed("SELECT * FROM ord"), Some(&schema), Some("shop")).expect("offers");
+        let completion = suggest(
+            Engine::Postgres,
+            &typed("SELECT * FROM ord"),
+            Some(&schema),
+            Some("shop"),
+        )
+        .expect("offers");
 
         assert_eq!(
             completion.candidates().first().map(|c| c.kind),
@@ -1237,7 +1281,13 @@ mod tests {
     #[test]
     fn a_statement_the_resolver_does_not_follow_still_offers_what_it_always_did() {
         let schema = schema();
-        let completion = suggest(&typed("GRANT sel"), Some(&schema), Some("shop")).expect("offers");
+        let completion = suggest(
+            Engine::Postgres,
+            &typed("GRANT sel"),
+            Some(&schema),
+            Some("shop"),
+        )
+        .expect("offers");
 
         assert_eq!(
             completion.candidates().first().map(|c| c.kind),
@@ -1254,7 +1304,7 @@ mod tests {
         for _ in 0..suffix.len() {
             editor.left();
         }
-        let completion = suggest(&editor, Some(&schema), None).expect("offers");
+        let completion = suggest(Engine::Postgres, &editor, Some(&schema), None).expect("offers");
 
         assert_eq!(
             completion.candidates().first().map(|c| c.text.as_str()),

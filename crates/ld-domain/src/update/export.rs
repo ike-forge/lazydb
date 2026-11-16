@@ -232,7 +232,7 @@ pub(super) fn source(state: &State, form: &ExportForm) -> Option<Source> {
         Scope::Whole | Scope::First => {
             let statement = Box::new(match subject {
                 Subject::Table(table) => state.browse(table),
-                Subject::Typed(sql) => Statement::typed(sql),
+                Subject::Typed(sql) => Statement::typed(state.engine(), sql),
             });
             let limit = match form.scope() {
                 Scope::First => Some(form.row_limit()?),

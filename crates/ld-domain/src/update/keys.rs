@@ -261,7 +261,12 @@ pub(super) fn edit(state: &mut State, key: Key) -> bool {
 /// Unqualified table names complete against the namespace Tables is showing.
 pub(super) fn complete(state: &mut State) {
     let namespace = state.visible_namespace();
-    let completion = sql::suggest(state.queries.buffer(), state.schema(), namespace.as_deref());
+    let completion = sql::suggest(
+        state.queries.engine(),
+        state.queries.buffer(),
+        state.schema(),
+        namespace.as_deref(),
+    );
     state.queries.offer(completion);
 }
 

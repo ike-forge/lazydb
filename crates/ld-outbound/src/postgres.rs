@@ -482,6 +482,7 @@ mod tests {
         Statement {
             sql: sql.to_owned(),
             kind: StatementKind::Read,
+            engine: ld_domain::Engine::Postgres,
         }
     }
 
@@ -572,6 +573,7 @@ mod tests {
             pageable(&Statement {
                 sql: "SELECT 1".to_owned(),
                 kind: StatementKind::Write,
+                engine: ld_domain::Engine::Postgres,
             }),
             None
         );

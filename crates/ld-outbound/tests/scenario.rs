@@ -206,7 +206,12 @@ async fn pressing_enter_on_a_table_fills_the_contents_panel() {
 
     assert_eq!(
         cluster.executed(),
-        vec![Statement::select_all("shop", "orders", &["id".to_owned()])],
+        vec![Statement::select_all(
+            ld_domain::Engine::Postgres,
+            "shop",
+            "orders",
+            &["id".to_owned()]
+        )],
         "the panel reads exactly the statement it shows"
     );
 
@@ -333,8 +338,18 @@ async fn reading_a_second_table_cancels_the_first_and_drops_its_late_page() {
     assert_eq!(
         cluster.executed(),
         vec![
-            Statement::select_all("shop", "orders", &["id".to_owned()]),
-            Statement::select_all("shop", "users", &["id".to_owned()]),
+            Statement::select_all(
+                ld_domain::Engine::Postgres,
+                "shop",
+                "orders",
+                &["id".to_owned()]
+            ),
+            Statement::select_all(
+                ld_domain::Engine::Postgres,
+                "shop",
+                "users",
+                &["id".to_owned()]
+            ),
         ]
     );
     assert_eq!(
@@ -760,7 +775,15 @@ async fn a_read_pages_through_p_and_then_shift_p_to_the_end() {
 
     assert_eq!(
         cluster.executed(),
-        vec![Statement::select_all("shop", "orders", &["id".to_owned()]); 3],
+        vec![
+            Statement::select_all(
+                ld_domain::Engine::Postgres,
+                "shop",
+                "orders",
+                &["id".to_owned()]
+            );
+            3
+        ],
         "every page continues the one statement"
     );
     assert_eq!(

@@ -2,7 +2,8 @@ use super::*;
 use crate::connection::Transaction;
 
 fn finished(state: &mut State, sql: &str) -> Vec<Effect> {
-    let (query, _) = crate::update::submit(state, Statement::typed(sql)).expect("submits");
+    let (query, _) = crate::update::submit(state, Statement::typed(crate::Engine::Postgres, sql))
+        .expect("submits");
 
     update(
         state,

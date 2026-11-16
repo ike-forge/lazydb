@@ -25,7 +25,23 @@ pub fn text(value: &Value) -> String {
         | Value::Array(value)
         | Value::Json(value) => value.clone(),
         Value::Blob(bytes) => hex(bytes),
+        Value::List(values) => sequence(values, '[', ']'),
+        Value::Set(values) => sequence(values, '{', '}'),
+        Value::Map(entries) => {
+            let rendered: Vec<String> = entries
+                .iter()
+                .map(|(key, value)| format!("{}: {}", text(key), text(value)))
+                .collect();
+            format!("{{{}}}", rendered.join(", "))
+        }
     }
+}
+
+/// As cqlsh prints a collection.
+fn sequence(values: &[Value], open: char, close: char) -> String {
+    let rendered: Vec<String> = values.iter().map(text).collect();
+
+    format!("{open}{}{close}", rendered.join(", "))
 }
 
 /// [`text`] made safe to draw. A raw ESC, `\n` or `\t` reaches the terminal as
@@ -99,6 +115,22 @@ mod tests {
         assert_eq!(text(&Value::Float(1.5)), "1.5");
         assert_eq!(text(&Value::Text("ada".to_owned())), "ada");
         assert_eq!(text(&Value::Uuid("8f14e45f".to_owned())), "8f14e45f");
+    }
+
+    #[test]
+    fn collections_render_the_way_cqlsh_prints_them() {
+        assert_eq!(
+            text(&Value::List(vec![Value::Int(1), Value::Int(2)])),
+            "[1, 2]"
+        );
+        assert_eq!(text(&Value::Set(Vec::new())), "{}");
+        assert_eq!(
+            text(&Value::Map(vec![(
+                Value::Int(1),
+                Value::Text("one".to_owned())
+            )])),
+            "{1: one}"
+        );
     }
 
     #[test]

@@ -531,7 +531,7 @@ fn d_is_inert_over_a_grid_filled_by_a_typed_statement() {
     state.contents.requested(
         query,
         Subject::Typed("SELECT * FROM shop.orders".to_owned()),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,

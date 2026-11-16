@@ -4,6 +4,7 @@
 use std::fmt::Write as _;
 
 use crate::ddl::StructureTab;
+use crate::engine::Engine;
 use crate::model::{
     Catalog, Column, ColumnDefault, Index, RelationKind, RelationRef, Schema, Table,
 };
@@ -185,7 +186,9 @@ pub(super) fn of(state: &State) -> Option<Details> {
             keys_of(catalog, namespace, table)
         }
         (Node::Table { namespace, table }, StructureTab::Indexes) => indexes_of(namespace, table),
-        (Node::Table { namespace, table }, StructureTab::Ddl) => ddl_of(namespace, table),
+        (Node::Table { namespace, table }, StructureTab::Ddl) => {
+            ddl_of(catalog.engine, namespace, table)
+        }
         (Node::Schema { namespace, .. }, _) => of_schema(namespace),
         (Node::Database { name, current, .. }, _) => of_database(catalog, name, current),
     };
@@ -401,7 +404,7 @@ fn keys_of(catalog: &Catalog, schema: &Schema, table: &Table) -> Details {
     Details { sections }
 }
 
-fn ddl_of(schema: &Schema, table: &Table) -> Details {
+fn ddl_of(engine: Engine, schema: &Schema, table: &Table) -> Details {
     Details {
         sections: populated([
             identity(schema, Some(table)),
@@ -409,7 +412,7 @@ fn ddl_of(schema: &Schema, table: &Table) -> Details {
                 heading: None,
                 group: Group::Settings,
                 token: None,
-                rows: crate::create::statements(schema, table)
+                rows: crate::create::statements(engine, schema, table)
                     .into_iter()
                     .map(|text| DetailRow::Code { text })
                     .collect(),

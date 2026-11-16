@@ -71,7 +71,13 @@ pub(super) fn rows_target(state: &State) -> Option<Target> {
         .map(|index| page.row(index))
         .collect::<Option<Vec<_>>>()?;
 
-    Target::rows(table, described, &page.page().columns, rows.into_iter())
+    Target::rows(
+        state.engine(),
+        table,
+        described,
+        &page.page().columns,
+        rows.into_iter(),
+    )
 }
 
 /// Silent refusals are greyed on the bar. The posture refusal is not silent:
@@ -105,7 +111,11 @@ pub(super) fn open_drop(state: &mut State) {
         return;
     };
 
-    state.overlay = Some(Overlay::Drop(DropPrompt::opened(target, state.posture())));
+    state.overlay = Some(Overlay::Drop(DropPrompt::opened(
+        state.engine(),
+        target,
+        state.posture(),
+    )));
     state.dirty = true;
 }
 

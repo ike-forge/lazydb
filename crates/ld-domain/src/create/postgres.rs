@@ -1,9 +1,9 @@
-//! A relation's definition as the SQL that would create it, rebuilt from the
-//! catalog: Postgres has no `pg_get_tabledef`. Indexes and constraints use the
+//! Postgres has no `pg_get_tabledef`. Indexes and constraints use the
 //! server's own rendering, so only the table's shell is ours.
 
 use std::fmt::Write as _;
 
+use super::literal;
 use crate::model::{Column, ForeignKey, RelationKind, RelationRef, Schema, Table};
 
 /// Every keyword Postgres reserves in some position: quoting one that only
@@ -114,8 +114,7 @@ const RESERVED: &[&str] = &[
 
 /// Bare when Postgres would read it back unchanged: lower case, a letter or
 /// underscore first, not reserved.
-#[must_use]
-pub fn ident(name: &str) -> String {
+pub(super) fn ident(name: &str) -> String {
     let mut chars = name.chars();
     let plain = chars
         .next()
@@ -134,10 +133,6 @@ fn qualified(schema: &str, table: &str) -> String {
     format!("{}.{}", ident(schema), ident(table))
 }
 
-fn literal(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "''"))
-}
-
 fn names(columns: &[String]) -> String {
     columns
         .iter()
@@ -146,9 +141,7 @@ fn names(columns: &[String]) -> String {
         .join(", ")
 }
 
-/// Lines, so the Structure panel can draw and yank them one at a time.
-#[must_use]
-pub fn statements(schema: &Schema, table: &Table) -> Vec<String> {
+pub(super) fn statements(schema: &Schema, table: &Table) -> Vec<String> {
     let name = qualified(&schema.name, &table.name);
     let mut lines = match table.kind {
         RelationKind::View => view("CREATE VIEW", &name, table),

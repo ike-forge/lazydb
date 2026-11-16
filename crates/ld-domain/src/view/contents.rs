@@ -9,6 +9,7 @@ use crate::contents::{
     ContentsState, Fetch, GridPage, MEMORY_STEP, Order, Paging, SelectionMode, Stopped, Subject,
     TableRef,
 };
+use crate::engine::Engine;
 use crate::inspect::{Inspected, Inspector};
 use crate::model::{Catalog, Value};
 use crate::panel::Panel;
@@ -131,10 +132,10 @@ pub(super) fn title(state: &State) -> Vec<Segment> {
     match state.contents.state() {
         ContentsState::Empty => vec![Segment::plain(BASE)],
         ContentsState::Loading { subject, .. } | ContentsState::Failed { subject, .. } => {
-            named(BASE, subject, None)
+            named(state.engine(), BASE, subject, None)
         }
         ContentsState::Loaded { subject, page, .. } => {
-            let mut segments = named(BASE, subject, Some(count(page)));
+            let mut segments = named(state.engine(), BASE, subject, Some(count(page)));
             if pages_may_shift(state, subject) {
                 segments.push(Segment::styled(" · no key, pages may shift", Token::Muted));
             }
@@ -161,12 +162,12 @@ fn pages_may_shift(state: &State, subject: &Subject) -> bool {
     keyless && paged
 }
 
-fn named(base: &str, subject: &Subject, count: Option<String>) -> Vec<Segment> {
+fn named(engine: Engine, base: &str, subject: &Subject, count: Option<String>) -> Vec<Segment> {
     let mut segments = vec![Segment::plain(format!("{base} — "))];
 
     match subject {
         Subject::Table(table) => segments.extend(table.segments()),
-        Subject::Typed(sql) => segments.extend(crate::sql::issued(sql)),
+        Subject::Typed(sql) => segments.extend(crate::sql::issued(engine, sql)),
     }
 
     if let Some(count) = count {
@@ -434,7 +435,7 @@ fn grid_table(state: &State, subject: &Subject) -> Option<TableRef> {
     match subject {
         Subject::Table(table) => Some(table.clone()),
         Subject::Typed(sql) => {
-            let name = crate::sql::sole_table(sql)?;
+            let name = crate::sql::sole_table(state.engine(), sql)?;
 
             let namespace = name
                 .namespace
@@ -496,7 +497,7 @@ mod tests {
         state.contents.requested(
             query,
             Subject::Table(TableRef::new("shop", "orders")),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
         state.contents.page_ready(
             query,
@@ -535,7 +536,7 @@ mod tests {
         state.contents.requested(
             query,
             Subject::Typed(sql.to_owned()),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
         state.contents.page_ready(
             query,
@@ -552,7 +553,7 @@ mod tests {
         state.contents.requested(
             query,
             Subject::Typed(sql.to_owned()),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
         state.contents.page_ready(
             query,
@@ -581,7 +582,7 @@ mod tests {
         state.contents.requested(
             QueryId::next(),
             Subject::Table(TableRef::new("shop", "orders")),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         assert_eq!(
@@ -608,7 +609,7 @@ mod tests {
                 kind: crate::model::SchemaKind::of(crate::Engine::Postgres, namespace),
                 ..TableRef::new(namespace, table)
             }),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
         state
     }
@@ -648,11 +649,14 @@ mod tests {
         state.contents.requested(
             QueryId::next(),
             Subject::Typed("SELECT *\n  FROM shop.orders".to_owned()),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         let mut expected = vec![Segment::plain("Table contents — ")];
-        expected.extend(crate::sql::issued("SELECT * FROM shop.orders"));
+        expected.extend(crate::sql::issued(
+            crate::Engine::Postgres,
+            "SELECT * FROM shop.orders",
+        ));
         assert_eq!(title_segments(&state), expected);
         assert!(
             expected
@@ -671,7 +675,7 @@ mod tests {
         state.contents.requested(
             query,
             Subject::Table(TableRef::new("shop", "orders")),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
         state.contents.failed(
             query,
@@ -788,7 +792,7 @@ mod tests {
         state.contents.requested(
             query,
             Subject::Table(TableRef::new("shop", "orders")),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
         state.contents.page_ready(
             query,
@@ -951,7 +955,7 @@ mod tests {
         state.contents.requested(
             query,
             Subject::Table(TableRef::new("shop", "orders")),
-            crate::model::Statement::typed("SELECT * FROM shop.orders"),
+            crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
         state.contents.page_ready(
             query,
@@ -1469,7 +1473,7 @@ mod tests {
         state.contents.requested(
             query,
             Subject::Table(TableRef::new("shop", "orders")),
-            crate::model::Statement::select_all("shop", "orders", &[]),
+            crate::model::Statement::select_all(crate::Engine::Postgres, "shop", "orders", &[]),
         );
         let mut page = page_of(&["id"], &[&[Value::Int(1)]]);
         if more {

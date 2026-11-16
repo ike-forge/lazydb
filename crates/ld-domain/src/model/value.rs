@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 /// Only the shapes the grid renders or sorts differently; every other type
-/// arrives as [`Value::Text`] in Postgres's own rendering.
+/// arrives as [`Value::Text`] in the server's own rendering.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
@@ -20,6 +20,11 @@ pub enum Value {
     Text(String),
     Blob(Vec<u8>),
     Uuid(String),
+    /// Cassandra's collections, structured as the driver hands them over.
+    List(Vec<Value>),
+    Set(Vec<Value>),
+    /// Keys of any type, in the server's order.
+    Map(Vec<(Value, Value)>),
 }
 
 impl Value {

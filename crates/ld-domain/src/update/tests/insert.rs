@@ -76,7 +76,7 @@ fn a_typed_statement_has_no_table_to_insert_into() {
     state.contents.requested(
         query,
         Subject::Typed("SELECT * FROM shop.orders".to_owned()),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -499,7 +499,7 @@ fn a_new_read_drops_the_draft() {
     state.contents.requested(
         QueryId::next(),
         Subject::Table(TableRef::new("shop", "customers")),
-        crate::model::Statement::select_all("shop", "customers", &[]),
+        crate::model::Statement::select_all(crate::Engine::Postgres, "shop", "customers", &[]),
     );
 
     assert_eq!(state.contents.take_draft(), None);

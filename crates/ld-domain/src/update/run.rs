@@ -62,7 +62,8 @@ pub(super) fn page_ready(
 /// What may have opened, ended or aborted a transaction asks the server:
 /// where a batch failed is not knowable from its text.
 fn probe(state: &State, stmt: &Statement) -> Option<Effect> {
-    let asks = state.posture().permits_mutation()
+    let asks = stmt.engine.has_transactions()
+        && state.posture().permits_mutation()
         && (stmt.mutates() || state.transaction != Transaction::Idle);
 
     state
@@ -209,7 +210,7 @@ pub(super) fn run(state: &mut State) -> Vec<Effect> {
     };
     let sql = sql.as_str();
 
-    let stmt = Statement::typed(sql);
+    let stmt = Statement::typed(state.engine(), sql);
 
     // Refused: a typed statement names its target in text nothing parses, so
     // there is nothing to confirm against (vision.md §4 principle 6). On a

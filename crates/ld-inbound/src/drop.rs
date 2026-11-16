@@ -372,6 +372,7 @@ mod tests {
 
     fn table() -> DropPrompt {
         DropPrompt::opened(
+            ld_domain::Engine::Postgres,
             Target::Table(TableRef::new("shop", "orders")),
             Posture::Writable,
         )
@@ -379,6 +380,7 @@ mod tests {
 
     fn namespace() -> DropPrompt {
         DropPrompt::opened(
+            ld_domain::Engine::Postgres,
             Target::Schema {
                 name: "shop".to_owned(),
                 kind: ld_domain::model::SchemaKind::User,
@@ -404,7 +406,7 @@ mod tests {
     fn a_namespace_block_draws_the_name_field_rather_than_a_yes_key() {
         let drawn = text(&drawn(80, 24, namespace()));
 
-        assert!(drawn.contains("Drop namespace shop"));
+        assert!(drawn.contains("Drop schema shop"));
         assert!(drawn.contains("Type shop to confirm:"));
         assert!(
             !drawn.contains("Yes, drop it"),
@@ -429,6 +431,7 @@ mod tests {
     fn a_long_statement_widens_the_block_rather_than_being_clipped() {
         let long = "a".repeat(60);
         let prompt = DropPrompt::opened(
+            ld_domain::Engine::Postgres,
             Target::Table(TableRef::new(&long, "orders")),
             Posture::Writable,
         );
@@ -448,7 +451,7 @@ mod tests {
     fn fits_agrees_with_what_the_block_actually_draws() {
         for (width, height) in [(40, 24), (80, 8), (44, 10), (80, 24)] {
             let area = ratatui::layout::Rect::new(0, 0, width, height);
-            let drew = text(&drawn(width, height, namespace())).contains("Drop namespace");
+            let drew = text(&drawn(width, height, namespace())).contains("Drop schema");
 
             assert_eq!(
                 super::fits(area),
@@ -485,6 +488,7 @@ mod tests {
             })
             .collect();
         let target = Target::rows(
+            ld_domain::Engine::Postgres,
             &TableRef::new("shop", "orders"),
             &described(),
             &columns,
@@ -492,7 +496,7 @@ mod tests {
         )
         .expect("every key column spells a literal");
 
-        DropPrompt::opened(target, Posture::Writable)
+        DropPrompt::opened(ld_domain::Engine::Postgres, target, Posture::Writable)
     }
 
     #[test]

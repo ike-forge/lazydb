@@ -144,6 +144,32 @@ fn json_value(value: &Value) -> String {
         // carried, so a number travels as the string Postgres printed.
         Value::Array(text) => crate::array::parse(text)
             .map_or_else(|| json_string(text), |elements| json_array(&elements)),
+        Value::List(values) | Value::Set(values) => {
+            let items: Vec<String> = values.iter().map(json_value).collect();
+            format!("[{}]", items.join(","))
+        }
+        // An object when every key is text, since JSON keys are; otherwise
+        // `[key, value]` pairs, so no two keys collide as strings.
+        Value::Map(entries) => {
+            let textual = entries
+                .iter()
+                .all(|(key, _)| matches!(key, Value::Text(_) | Value::Uuid(_)));
+            let items: Vec<String> = entries
+                .iter()
+                .map(|(key, value)| {
+                    if textual {
+                        format!("{}:{}", json_string(&cell::text(key)), json_value(value))
+                    } else {
+                        format!("[{},{}]", json_value(key), json_value(value))
+                    }
+                })
+                .collect();
+            if textual {
+                format!("{{{}}}", items.join(","))
+            } else {
+                format!("[{}]", items.join(","))
+            }
+        }
         // No JSON type: travel as the text the grid draws.
         Value::Text(_) | Value::Blob(_) | Value::Uuid(_) => json_string(&cell::text(value)),
     }
@@ -676,6 +702,23 @@ mod tests {
     }
 
     #[test]
+    fn a_collection_exports_as_json_and_a_map_with_typed_keys_as_pairs() {
+        let text = |t: &str| Value::Text(t.to_owned());
+        assert_eq!(
+            json_value(&Value::List(vec![Value::Int(1), Value::Null])),
+            "[1,null]"
+        );
+        assert_eq!(
+            json_value(&Value::Map(vec![(text("a"), Value::Set(vec![text("x")]))])),
+            r#"{"a":["x"]}"#
+        );
+        assert_eq!(
+            json_value(&Value::Map(vec![(Value::Int(1), text("one"))])),
+            r#"[[1,"one"]]"#
+        );
+    }
+
+    #[test]
     fn csv_opens_with_a_header_row() {
         let mut encoder = Encoder::new(Format::Csv);
 
@@ -1182,7 +1225,12 @@ mod tests {
     #[test]
     fn a_filtered_grid_offers_the_fetched_scope_even_where_the_result_ended() {
         let more = Paging::More {
-            stmt: crate::model::Statement::select_all("shop", "orders", &[]),
+            stmt: crate::model::Statement::select_all(
+                crate::Engine::Postgres,
+                "shop",
+                "orders",
+                &[],
+            ),
             cursor: crate::model::PagingState(vec![1]),
             fetch: crate::contents::Fetch::Idle,
         };

@@ -4,16 +4,20 @@
 
 use super::keywords;
 use super::lex::{Kind, Piece, pieces};
+use crate::engine::Engine;
 
 /// Two: the panel is short and narrow.
 const INDENT: &str = "  ";
 
 /// Idempotent.
 #[must_use]
-pub fn format(text: &str) -> String {
-    let mut out = Layout::default();
+pub fn format(engine: Engine, text: &str) -> String {
+    let mut out = Layout {
+        engine,
+        ..Layout::default()
+    };
 
-    for piece in pieces(text).into_iter().filter(is_written) {
+    for piece in pieces(engine, text).into_iter().filter(is_written) {
         out.push(&piece);
     }
 
@@ -26,12 +30,16 @@ fn is_written(piece: &Piece) -> bool {
 
 #[derive(Default)]
 struct Layout {
+    engine: Engine,
     lines: Vec<String>,
     line: String,
     /// A clause keyword inside brackets is not a clause.
     depth: usize,
     /// A blank line between statements.
     separate: bool,
+    /// CQL batch members are indented, so statement boundaries show without
+    /// reading for `;`.
+    batched: bool,
     previous: Option<Piece>,
 }
 
@@ -46,6 +54,15 @@ impl Layout {
 
         if std::mem::take(&mut self.separate) {
             self.lines.push(String::new());
+        }
+
+        // The indent was written when the last member's `;` wrapped; take it
+        // back.
+        if self.batched && piece.text == "APPLY" {
+            self.batched = false;
+            if self.blank() {
+                self.line.clear();
+            }
         }
 
         if self.breaks_before(piece) {
@@ -63,7 +80,7 @@ impl Layout {
             self.wrap(false);
         }
 
-        self.separate = piece.text == ";";
+        self.separate = piece.text == ";" && !self.batched;
     }
 
     /// A name's case is load-bearing, and a literal's case is its value.
@@ -96,10 +113,10 @@ impl Layout {
 
         let compound = self.previous.as_ref().is_some_and(|previous| {
             previous.kind == Kind::Keyword
-                && COMPOUND.contains(&(previous.text.as_str(), piece.text.as_str()))
+                && compound(self.engine).contains(&(previous.text.as_str(), piece.text.as_str()))
         });
 
-        !compound && is_clause(&piece.text)
+        !compound && clauses(self.engine).contains(&piece.text.as_str())
     }
 
     fn spaces_before(&self, piece: &Piece) -> bool {
@@ -115,12 +132,16 @@ impl Layout {
             return true;
         }
 
-        if tight_after(&previous.text) || tight_before(&piece.text) {
+        // `:` binds left always; right only in a Postgres `::` cast, since
+        // in CQL it separates a map's key from its value.
+        let cast = self.engine == Engine::Postgres;
+        if tight_after(&previous.text, cast) || tight_before(&piece.text) {
             return false;
         }
 
         // A type's modifier binds as a call's arguments do: `numeric(10, 2)`.
-        let typed = previous.kind == Kind::Keyword && keywords::is_type(&previous.text);
+        let typed =
+            previous.kind == Kind::Keyword && keywords::is_type(self.engine, &previous.text);
 
         !(piece.text == "("
             && (typed || (previous.kind == Kind::Identifier && self.binds_brackets())))
@@ -141,6 +162,16 @@ impl Layout {
             _ => {}
         }
 
+        if self.engine == Engine::Cassandra
+            && piece.text == "BATCH"
+            && self
+                .previous
+                .as_ref()
+                .is_some_and(|previous| previous.text == "BEGIN")
+        {
+            self.batched = true;
+        }
+
         self.previous = Some(piece.clone());
     }
 
@@ -152,7 +183,7 @@ impl Layout {
         }
 
         self.lines.push(std::mem::take(&mut self.line));
-        if indented {
+        for _ in 0..usize::from(self.batched) + usize::from(indented) {
             self.line.push_str(INDENT);
         }
     }
@@ -164,8 +195,15 @@ impl Layout {
     }
 }
 
+const fn compound(engine: Engine) -> &'static [(&'static str, &'static str)] {
+    match engine {
+        Engine::Postgres => SQL_COMPOUND,
+        Engine::Cassandra => CQL_COMPOUND,
+    }
+}
+
 /// Only pairs whose second word would open a clause alone.
-const COMPOUND: &[(&str, &str)] = &[
+const SQL_COMPOUND: &[(&str, &str)] = &[
     ("CREATE", "OR"),
     ("CROSS", "JOIN"),
     ("DELETE", "FROM"),
@@ -187,6 +225,23 @@ const COMPOUND: &[(&str, &str)] = &[
     ("UNION", "ALL"),
 ];
 
+const CQL_COMPOUND: &[(&str, &str)] = &[
+    ("AGGREGATE", "IF"),
+    ("COLUMNFAMILY", "IF"),
+    ("CREATE", "OR"),
+    ("DELETE", "FROM"),
+    ("FUNCTION", "IF"),
+    ("INDEX", "IF"),
+    ("INSERT", "INTO"),
+    ("KEYSPACE", "IF"),
+    ("PARTITION", "LIMIT"),
+    ("ROLE", "IF"),
+    ("TABLE", "IF"),
+    ("TYPE", "IF"),
+    ("USER", "IF"),
+    ("VIEW", "IF"),
+];
+
 const DEFINES: &[&str] = &["ALTER", "CREATE", "DROP", "INSERT"];
 
 fn continues(text: &str) -> bool {
@@ -198,9 +253,8 @@ fn ends_a_line(piece: &Piece) -> bool {
     piece.text == ";" || (piece.kind == Kind::Comment && !piece.text.starts_with("/*"))
 }
 
-/// `:` for the `::` of a cast.
-fn tight_after(text: &str) -> bool {
-    matches!(text, "(" | "[" | "{" | "." | ":")
+fn tight_after(text: &str, cast: bool) -> bool {
+    matches!(text, "(" | "[" | "{" | ".") || (cast && text == ":")
 }
 
 /// `[` for a subscript, an array type and `ARRAY[…]`.
@@ -208,53 +262,53 @@ fn tight_before(text: &str) -> bool {
     matches!(text, ")" | "[" | "]" | "}" | "." | "," | ";" | ":")
 }
 
-/// Its own list: type names like `TEXT` are keywords that must never break a
-/// line. `ON` stays with its join, `IF` with its `NOT EXISTS`.
-fn is_clause(text: &str) -> bool {
-    const CLAUSES: &[&str] = &[
-        "ALTER",
-        "AND",
-        "CREATE",
-        "CROSS",
-        "DELETE",
-        "DROP",
-        "EXCEPT",
-        "FROM",
-        "FULL",
-        "GRANT",
-        "GROUP",
-        "HAVING",
-        "INNER",
-        "INSERT",
-        "INTERSECT",
-        "JOIN",
-        "LEFT",
-        "LIMIT",
-        "NATURAL",
-        "OFFSET",
-        "OR",
-        "ORDER",
-        "RETURNING",
-        "REVOKE",
-        "RIGHT",
-        "SELECT",
-        "SET",
-        "TRUNCATE",
-        "UNION",
-        "UPDATE",
-        "USING",
-        "VALUES",
-        "WHERE",
-        "WINDOW",
-        "WITH",
-    ];
-
-    debug_assert!(
-        CLAUSES.iter().all(|clause| keywords::is_keyword(clause)),
-        "a clause opener that is not a keyword can never be reached"
-    );
-
-    CLAUSES.contains(&text)
+/// Their own lists: type names like `TEXT` are keywords that must never break
+/// a line. `ON` stays with its join, `IF` with its `NOT EXISTS`.
+const fn clauses(engine: Engine) -> &'static [&'static str] {
+    match engine {
+        Engine::Postgres => &[
+            "ALTER",
+            "AND",
+            "CREATE",
+            "CROSS",
+            "DELETE",
+            "DROP",
+            "EXCEPT",
+            "FROM",
+            "FULL",
+            "GRANT",
+            "GROUP",
+            "HAVING",
+            "INNER",
+            "INSERT",
+            "INTERSECT",
+            "JOIN",
+            "LEFT",
+            "LIMIT",
+            "NATURAL",
+            "OFFSET",
+            "OR",
+            "ORDER",
+            "RETURNING",
+            "REVOKE",
+            "RIGHT",
+            "SELECT",
+            "SET",
+            "TRUNCATE",
+            "UNION",
+            "UPDATE",
+            "USING",
+            "VALUES",
+            "WHERE",
+            "WINDOW",
+            "WITH",
+        ],
+        Engine::Cassandra => &[
+            "ALLOW", "ALTER", "AND", "APPLY", "BEGIN", "CREATE", "DELETE", "DROP", "FROM", "GRANT",
+            "GROUP", "IF", "INSERT", "INTO", "LIMIT", "OR", "ORDER", "PER", "REVOKE", "SELECT",
+            "SET", "TRUNCATE", "UPDATE", "USE", "USING", "VALUES", "WHERE", "WITH",
+        ],
+    }
 }
 
 #[cfg(test)]
@@ -263,10 +317,43 @@ mod tests {
 
     /// Asserted twice, since formatting is idempotent.
     fn formatted(source: &str) -> String {
-        let once = format(source);
-        assert_eq!(format(&once), once, "formatting is idempotent");
+        formatted_in(Engine::Postgres, source)
+    }
+
+    fn formatted_in(engine: Engine, source: &str) -> String {
+        let once = format(engine, source);
+        assert_eq!(format(engine, &once), once, "formatting is idempotent");
 
         once
+    }
+
+    #[test]
+    fn every_clause_opener_is_a_keyword_or_it_could_never_be_reached() {
+        for engine in Engine::ALL {
+            for clause in clauses(engine) {
+                assert!(keywords::is_keyword(engine, clause), "{engine:?}: {clause}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_batch_indents_its_members_and_not_its_brackets() {
+        assert_eq!(
+            formatted_in(
+                Engine::Cassandra,
+                "BEGIN BATCH UPDATE t SET a = 1 WHERE id = 7 AND at = 8; DELETE FROM t WHERE id = 8; APPLY BATCH; SELECT 1"
+            ),
+            "BEGIN BATCH\n  UPDATE t\n  SET a = 1\n  WHERE id = 7\n    AND at = 8;\n  DELETE FROM t\n  WHERE id = 8;\nAPPLY BATCH;\n\nSELECT 1"
+        );
+    }
+
+    #[test]
+    fn a_cql_map_keeps_a_space_after_its_colons_and_a_cast_keeps_none() {
+        assert_eq!(
+            formatted_in(Engine::Cassandra, "UPDATE t SET m = {'a': 1} WHERE k = 1"),
+            "UPDATE t\nSET m = {'a': 1}\nWHERE k = 1"
+        );
+        assert_eq!(formatted("SELECT 1::text"), "SELECT 1::TEXT");
     }
 
     #[test]

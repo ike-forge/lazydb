@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use crate::config::{ConnectionName, HistoryLimit};
+use crate::engine::Engine;
 use crate::sql::fold;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -26,7 +27,7 @@ impl History {
 
         match self.entries.first_mut() {
             Some(newest) if newest == statement => return false,
-            Some(newest) if fold(newest) == fold(statement) => statement.clone_into(newest),
+            Some(newest) if same(newest, statement) => statement.clone_into(newest),
             _ => self.entries.insert(0, statement.to_owned()),
         }
 
@@ -80,6 +81,12 @@ impl Histories {
 #[must_use]
 pub fn one_line(statement: &str) -> String {
     statement.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Folded as SQL whatever the connection: both languages fold unquoted names
+/// and keywords alike, and the store restores entries without an engine.
+fn same(left: &str, right: &str) -> bool {
+    fold(Engine::Postgres, left) == fold(Engine::Postgres, right)
 }
 
 #[cfg(test)]

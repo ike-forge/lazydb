@@ -106,6 +106,7 @@ pub(super) fn pending_commit(
     if cells == 0 {
         return None;
     }
+    let engine = state.engine();
     let described = state
         .schema()?
         .schemas
@@ -132,14 +133,14 @@ pub(super) fn pending_commit(
 
             Some((
                 sets,
-                RowKey::of(&key, columns, page.page().rows.get(at)?)?
+                RowKey::of(engine, &key, columns, page.page().rows.get(at)?)?
                     .pairs()
                     .to_vec(),
             ))
         })
         .collect::<Option<Vec<_>>>()?;
 
-    let statement = Statement::update_rows(&table.namespace, &table.table, &rows);
+    let statement = Statement::update_rows(engine, &table.namespace, &table.table, &rows);
     let statement = if state.transaction == Transaction::Idle {
         statement
     } else {

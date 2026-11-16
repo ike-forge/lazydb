@@ -269,7 +269,7 @@ pub(crate) mod tests_support {
         panel.requested(
             query,
             Subject::Table(TableRef::new("shop", "orders")),
-            Statement::typed("SELECT * FROM shop.orders"),
+            Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
         (panel, query)
     }
@@ -483,7 +483,7 @@ mod tests {
         panel.requested(
             QueryId::next(),
             Subject::Table(TableRef::new("shop", "users")),
-            Statement::typed("SELECT * FROM shop.orders"),
+            Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         panel.page_ready(first, page(3), MaxColumnWidth::default(), QueryId::next);
@@ -527,7 +527,7 @@ mod tests {
         panel.requested(
             next,
             Subject::Table(TableRef::new("shop", "users")),
-            Statement::typed("SELECT * FROM shop.orders"),
+            Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         assert_eq!(
@@ -576,7 +576,7 @@ mod tests {
         panel.requested(
             QueryId::next(),
             Subject::Table(TableRef::new("shop", "orders")),
-            Statement::typed("SELECT * FROM shop.orders"),
+            Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         assert_eq!(panel.scroll.offset(), 0, "a second table opens at its top");
@@ -605,7 +605,7 @@ mod tests {
         panel.requested(
             query,
             Subject::Typed("SELECT 1".to_owned()),
-            Statement::typed("SELECT * FROM shop.orders"),
+            Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         panel.page_ready(query, page(3), MaxColumnWidth::default(), QueryId::next);
@@ -674,7 +674,7 @@ mod tests {
         panel.requested(
             QueryId::next(),
             Subject::Table(TableRef::new("shop", "carts")),
-            Statement::typed("SELECT * FROM shop.orders"),
+            Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         assert_eq!(panel.column.index(), 0);
@@ -727,7 +727,7 @@ mod tests {
         panel.requested(
             QueryId::next(),
             Subject::Table(TableRef::new("shop", "orders")),
-            Statement::typed("SELECT * FROM shop.orders"),
+            Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         assert_eq!(panel.mode, SelectionMode::Column);
@@ -745,7 +745,7 @@ mod tests {
         panel.requested(
             QueryId::next(),
             Subject::Typed("select 1".to_owned()),
-            Statement::typed("SELECT * FROM shop.orders"),
+            Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
         );
 
         assert!(!panel.rows.is_active());

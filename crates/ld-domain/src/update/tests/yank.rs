@@ -33,7 +33,7 @@ fn a_yanked_row_carries_every_column_of_the_page() {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -83,7 +83,7 @@ fn the_column_follow_draws_by_the_widths_the_grid_is_drawn_at() {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -724,7 +724,7 @@ fn a_payload_of_nothing_but_delimiters_reaches_no_clipboard() {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -795,7 +795,7 @@ fn shift_y_on_a_typed_statements_grid_says_why_it_copies_nothing() {
     state.contents.requested(
         query,
         Subject::Typed("SELECT * FROM shop.orders".to_owned()),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,

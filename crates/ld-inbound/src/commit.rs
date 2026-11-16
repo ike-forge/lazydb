@@ -227,7 +227,7 @@ mod tests {
 
         CommitPrompt::opened(
             TableRef::new("shop", "orders"),
-            Statement::update_rows("shop", "orders", &rows),
+            Statement::update_rows(ld_domain::Engine::Postgres, "shop", "orders", &rows),
             rows.len(),
             rows.len(),
         )

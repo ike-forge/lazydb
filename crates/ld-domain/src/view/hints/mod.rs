@@ -318,11 +318,11 @@ fn live(state: &State, binding: &Binding) -> bool {
         // Follows the statement as typed: the same key runs a `SELECT` and is
         // refused a `DELETE`.
         RUN => state.queries.statement().is_some_and(|sql| {
-            state.posture().permits_mutation() || !Statement::typed(&sql).mutates()
+            state.posture().permits_mutation() || !Statement::typed(state.engine(), &sql).mutates()
         }),
         FORMAT => {
             let text = state.queries.text();
-            crate::sql::format(&text) != text
+            crate::sql::format(state.queries.engine(), &text) != text
         }
         NEXT_PAGE | EVERY_PAGE => state.contents.can_fetch(),
         EXPORT_ROWS => state.contents.row_count() > 0 && state.geometry.export_fits(),

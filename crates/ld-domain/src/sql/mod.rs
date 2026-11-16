@@ -1,6 +1,6 @@
-//! SQL as the editor needs it: highlighted, formatted, completed, and split
-//! into statements. All four read the same scan, so they cannot disagree about
-//! a word.
+//! The editor's language — SQL or CQL, by engine — as the editor needs it:
+//! highlighted, formatted, completed, and split into statements. All four
+//! read the same scan, so they cannot disagree about a word.
 
 mod complete;
 mod format;
@@ -15,14 +15,17 @@ pub use format::format;
 pub use resolve::{Analysis, Context, Expect, Name, Role, Statement};
 pub use statements::{Span, statements};
 
+pub(crate) use keywords::is_keyword;
+
+use crate::engine::Engine;
 use crate::style::{Segment, Token};
 use lex::Kind;
 use resolve::resolve;
 
 /// Statements are the same exactly when their folds are equal.
 #[must_use]
-pub fn fold(sql: &str) -> String {
-    lex::pieces(sql)
+pub fn fold(engine: Engine, sql: &str) -> String {
+    lex::pieces(engine, sql)
         .into_iter()
         .map(|piece| match piece.kind {
             Kind::Keyword => piece.text.to_lowercase(),
@@ -36,9 +39,9 @@ pub fn fold(sql: &str) -> String {
 /// while the buffer names several, and an `INSERT`'s table is not where rows
 /// came from.
 #[must_use]
-pub fn sole_table(sql: &str) -> Option<Name> {
-    let scanned = lex::pieces(sql);
-    let analysis = resolve(&scanned);
+pub fn sole_table(engine: Engine, sql: &str) -> Option<Name> {
+    let scanned = lex::pieces(engine, sql);
+    let analysis = resolve(engine, &scanned);
 
     if analysis.statements() != 1 || analysis.statement_at(0) != Statement::Select {
         return None;
@@ -52,9 +55,9 @@ pub fn sole_table(sql: &str) -> Option<Name> {
 
 /// Exactly one line out per buffer line.
 #[must_use]
-pub fn highlight(text: &str) -> Vec<Vec<Segment>> {
-    let scanned = lex::pieces(text);
-    let analysis = resolve(&scanned);
+pub fn highlight(engine: Engine, text: &str) -> Vec<Vec<Segment>> {
+    let scanned = lex::pieces(engine, text);
+    let analysis = resolve(engine, &scanned);
     let mut lines = Vec::new();
     let mut line: Vec<Segment> = Vec::new();
 
@@ -78,9 +81,9 @@ pub fn highlight(text: &str) -> Vec<Vec<Segment>> {
 /// Works from tokens, so whitespace collapses only between them and literals
 /// survive byte for byte.
 #[must_use]
-pub fn issued(text: &str) -> Vec<Segment> {
-    let scanned = lex::pieces(text);
-    let analysis = resolve(&scanned);
+pub fn issued(engine: Engine, text: &str) -> Vec<Segment> {
+    let scanned = lex::pieces(engine, text);
+    let analysis = resolve(engine, &scanned);
     let mut line = Vec::new();
     let mut pending_space = false;
 
@@ -136,11 +139,11 @@ const fn token(kind: Kind, role: Option<Role>) -> Option<Token> {
 /// Each statement's words, upper case, without literals, comments or
 /// punctuation: what classifying it reads.
 #[must_use]
-pub(crate) fn statement_words(text: &str) -> Vec<Vec<String>> {
+pub(crate) fn statement_words(engine: Engine, text: &str) -> Vec<Vec<String>> {
     let mut statements: Vec<Vec<String>> = Vec::new();
     let mut open = false;
 
-    for piece in lex::pieces(text) {
+    for piece in lex::pieces(engine, text) {
         match piece.kind {
             Kind::Punctuation if piece.text == ";" => open = false,
             Kind::Keyword | Kind::Identifier => {
@@ -177,14 +180,14 @@ mod tests {
 
     #[test]
     fn an_empty_buffer_is_one_empty_line() {
-        assert_eq!(highlight(""), vec![Vec::new()]);
+        assert_eq!(highlight(Engine::Postgres, ""), vec![Vec::new()]);
     }
 
     #[test]
     fn the_lines_out_are_the_lines_in() {
         let source = "SELECT *\nFROM shop.orders\n\nWHERE id = 7";
 
-        let lines = highlight(source);
+        let lines = highlight(Engine::Postgres, source);
 
         assert_eq!(lines.len(), source.lines().count());
         for (styled, plain) in lines.iter().zip(source.split('\n')) {
@@ -194,7 +197,7 @@ mod tests {
 
     #[test]
     fn grammar_names_and_values_are_told_apart() {
-        let lines = highlight("SELECT id FROM orders WHERE id = 7");
+        let lines = highlight(Engine::Postgres, "SELECT id FROM orders WHERE id = 7");
 
         assert_eq!(
             tokens(&lines[0]),
@@ -219,7 +222,7 @@ mod tests {
 
     #[test]
     fn a_block_comment_keeps_its_colour_across_the_lines_it_spans() {
-        let lines = highlight("/* one\ntwo */ SELECT");
+        let lines = highlight(Engine::Postgres, "/* one\ntwo */ SELECT");
 
         assert_eq!(tokens(&lines[0]), vec![(Some(Token::Comment), "/* one")]);
         assert_eq!(
@@ -234,26 +237,29 @@ mod tests {
 
     #[test]
     fn a_trailing_newline_leaves_an_empty_last_line() {
-        assert_eq!(highlight("SELECT\n").len(), 2);
+        assert_eq!(highlight(Engine::Postgres, "SELECT\n").len(), 2);
     }
 
     #[test]
     fn issuing_a_statement_collapses_whitespace_between_tokens_but_not_inside_a_literal() {
-        let issued = issued("INSERT INTO t (v)\n  VALUES ('a  b')");
+        let issued = issued(Engine::Postgres, "INSERT INTO t (v)\n  VALUES ('a  b')");
 
         assert_eq!(text(&issued), "INSERT INTO t (v) VALUES ('a  b')");
     }
 
     #[test]
     fn issuing_a_statement_drops_a_comment_but_keeps_the_clause_it_stood_before() {
-        let issued = issued("SELECT * FROM t -- get orders\nWHERE id = 1");
+        let issued = issued(
+            Engine::Postgres,
+            "SELECT * FROM t -- get orders\nWHERE id = 1",
+        );
 
         assert_eq!(text(&issued), "SELECT * FROM t WHERE id = 1");
     }
 
     #[test]
     fn a_qualified_table_paints_its_namespace_and_its_table_apart() {
-        let lines = highlight("SELECT id FROM shop.orders");
+        let lines = highlight(Engine::Postgres, "SELECT id FROM shop.orders");
 
         assert_eq!(
             tokens(&lines[0]),
@@ -273,7 +279,7 @@ mod tests {
 
     #[test]
     fn a_name_the_cluster_never_heard_of_is_painted_by_its_position() {
-        let lines = highlight("SELECT * FROM shp.ordrs");
+        let lines = highlight(Engine::Postgres, "SELECT * FROM shp.ordrs");
 
         assert!(
             tokens(&lines[0]).contains(&(Some(Token::Schema), "shp")),
@@ -283,7 +289,7 @@ mod tests {
 
     #[test]
     fn a_name_in_a_statement_the_resolver_does_not_follow_stays_a_reference() {
-        let lines = highlight("GRANT SELECT ON shop.orders TO ike");
+        let lines = highlight(Engine::Postgres, "GRANT SELECT ON shop.orders TO ike");
 
         assert!(tokens(&lines[0]).contains(&(Some(Token::Reference), "shop")));
     }
@@ -296,7 +302,7 @@ mod tests {
     #[test]
     fn a_trailing_semicolon_still_names_the_one_table() {
         assert_eq!(
-            sole(sole_table("select * from shop.orders;")),
+            sole(sole_table(Engine::Postgres, "select * from shop.orders;")),
             Some((Some("shop".to_owned()), "orders".to_owned()))
         );
     }
@@ -304,12 +310,15 @@ mod tests {
     #[test]
     fn whitespace_before_or_after_a_trailing_semicolon_still_names_the_one_table() {
         assert_eq!(
-            sole(sole_table("select * from shop.orders ;")),
+            sole(sole_table(Engine::Postgres, "select * from shop.orders ;")),
             Some((Some("shop".to_owned()), "orders".to_owned())),
             "whitespace before the semicolon"
         );
         assert_eq!(
-            sole(sole_table("select * from shop.orders;   ")),
+            sole(sole_table(
+                Engine::Postgres,
+                "select * from shop.orders;   "
+            )),
             Some((Some("shop".to_owned()), "orders".to_owned())),
             "whitespace after the semicolon"
         );
@@ -318,25 +327,38 @@ mod tests {
     #[test]
     fn a_statement_that_is_not_a_select_names_no_sole_table() {
         // Each names one table but reads no row from it.
-        assert_eq!(sole_table("insert into shop.orders (id) values (1)"), None);
-        assert_eq!(sole_table("truncate shop.orders"), None);
-        assert_eq!(sole_table("update shop.orders set total = 1"), None);
         assert_eq!(
-            sole_table("create table shop.orders (id uuid primary key)"),
+            sole_table(Engine::Postgres, "insert into shop.orders (id) values (1)"),
             None
         );
-        assert_eq!(sole_table("use shop"), None);
+        assert_eq!(sole_table(Engine::Postgres, "truncate shop.orders"), None);
+        assert_eq!(
+            sole_table(Engine::Postgres, "update shop.orders set total = 1"),
+            None
+        );
+        assert_eq!(
+            sole_table(
+                Engine::Postgres,
+                "create table shop.orders (id uuid primary key)"
+            ),
+            None
+        );
+        assert_eq!(sole_table(Engine::Postgres, "use shop"), None);
     }
 
     #[test]
     fn two_statements_separated_by_a_semicolon_name_no_sole_table() {
-        assert_eq!(sole_table("select * from a; select * from b"), None);
+        assert_eq!(
+            sole_table(Engine::Postgres, "select * from a; select * from b"),
+            None
+        );
     }
 
     #[test]
     fn a_batch_names_no_sole_table() {
         assert_eq!(
             sole_table(
+                Engine::Postgres,
                 "begin batch insert into shop.orders (id) values (1); \
                  insert into shop.customers (id) values (2); apply batch"
             ),
@@ -346,31 +368,37 @@ mod tests {
 
     #[test]
     fn a_lone_semicolon_or_an_empty_buffer_names_no_sole_table_and_does_not_panic() {
-        assert_eq!(sole_table(";"), None);
-        assert_eq!(sole_table(""), None);
+        assert_eq!(sole_table(Engine::Postgres, ";"), None);
+        assert_eq!(sole_table(Engine::Postgres, ""), None);
     }
 
     fn statements_in(sql: &str) -> usize {
-        resolve(&lex::pieces(sql)).statements()
+        resolve(Engine::Postgres, &lex::pieces(Engine::Postgres, sql)).statements()
     }
 
     /// A bare identifier reaches neither `keyword()` nor `record()`.
     #[test]
     fn a_stray_word_after_a_semicolon_is_a_second_statement_not_an_empty_tail() {
-        assert_eq!(sole_table("select * from a; notacommand"), None);
+        assert_eq!(
+            sole_table(Engine::Postgres, "select * from a; notacommand"),
+            None
+        );
         assert_eq!(statements_in("select * from a; notacommand"), 2);
     }
 
     #[test]
     fn a_stray_close_paren_after_a_semicolon_is_a_second_statement_not_an_empty_tail() {
-        assert_eq!(sole_table("select * from a; )"), None);
+        assert_eq!(sole_table(Engine::Postgres, "select * from a; )"), None);
         assert_eq!(statements_in("select * from a; )"), 2);
     }
 
     #[test]
     fn a_line_comment_after_a_semicolon_is_still_an_empty_tail() {
         assert_eq!(
-            sole(sole_table("select * from a; -- a comment")),
+            sole(sole_table(
+                Engine::Postgres,
+                "select * from a; -- a comment"
+            )),
             Some((None, "a".to_owned()))
         );
     }
@@ -378,7 +406,7 @@ mod tests {
     #[test]
     fn a_block_comment_after_a_semicolon_is_still_an_empty_tail() {
         assert_eq!(
-            sole(sole_table("select * from a;  /* c */")),
+            sole(sole_table(Engine::Postgres, "select * from a;  /* c */")),
             Some((None, "a".to_owned()))
         );
     }

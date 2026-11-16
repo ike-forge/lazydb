@@ -7,7 +7,7 @@ fn columnar_grid(column: usize) -> State {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -221,7 +221,7 @@ fn exporting_the_fetched_rows_writes_the_ones_the_grid_is_showing() {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,

@@ -3,6 +3,7 @@
 //! name is coloured by what the statement does with it.
 
 use super::lex::{Kind, Piece};
+use crate::engine::Engine;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -121,8 +122,8 @@ pub struct Context {
 /// Inside an identifier, the cursor takes that identifier's expectation; in
 /// whitespace, the next name's.
 #[must_use]
-pub(crate) fn context_at(pieces: &[Piece], offset: usize) -> Context {
-    let analysis = resolve(pieces);
+pub(crate) fn context_at(engine: Engine, pieces: &[Piece], offset: usize) -> Context {
+    let analysis = resolve(engine, pieces);
     let index = piece_at(pieces, offset);
 
     Context {
@@ -154,8 +155,9 @@ fn piece_at(pieces: &[Piece], offset: usize) -> usize {
 }
 
 #[must_use]
-pub(crate) fn resolve(pieces: &[Piece]) -> Analysis {
+pub(crate) fn resolve(engine: Engine, pieces: &[Piece]) -> Analysis {
     let mut machine = Machine {
+        engine,
         tables: vec![Vec::new()],
         scopes: vec![Scope::default()],
         ..Machine::default()
@@ -183,6 +185,7 @@ enum Verb {
 /// One flat state: every clause that takes a column takes it the same way.
 #[derive(Debug, Default)]
 struct Machine {
+    engine: Engine,
     expect: Expect,
     /// What `,` and the end of an alias restore. Set only by clause keywords,
     /// never by `=` or `AS`.
@@ -263,6 +266,14 @@ impl Machine {
             After::Other
         };
 
+        // A batch's wrapper names nothing; each statement inside is read as
+        // if it stood alone.
+        if self.engine == Engine::Cassandra
+            && matches!(word, "BEGIN" | "BATCH" | "APPLY" | "UNLOGGED" | "COUNTER")
+        {
+            return;
+        }
+
         if self.verb == Verb::Unread {
             // `EXPLAIN` and its options name nothing; what follows is read as
             // if it stood alone.
@@ -278,7 +289,7 @@ impl Machine {
 
             self.verb = match word {
                 "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE" | "DROP" | "TABLE"
-                | "MERGE" | "VALUES" => Verb::Data,
+                | "MERGE" | "VALUES" | "USE" => Verb::Data,
                 // A leading `WITH` names its queries, as an alias does.
                 "WITH" => {
                     self.verb = Verb::Data;
@@ -310,9 +321,11 @@ impl Machine {
                 }
                 self.enter(Expect::Table)
             }
-            "SCHEMA" => self.enter(Expect::Schema),
+            "SCHEMA" | "KEYSPACE" | "USE" => self.enter(Expect::Schema),
+            // CQL's `USING TTL 60` takes a value.
+            "USING" if self.engine == Engine::Cassandra => self.enter(Expect::Value),
             "SELECT" | "DELETE" | "WHERE" | "SET" | "BY" | "PRIMARY" | "RENAME" | "DROP"
-            | "HAVING" | "RETURNING" | "USING" => self.enter(Expect::Column),
+            | "HAVING" | "RETURNING" | "USING" | "TOKEN" => self.enter(Expect::Column),
             // `AND` continues the open clause: in `WITH` it chains options.
             "AND" => {
                 let base = self.base;
@@ -323,7 +336,9 @@ impl Machine {
                 self.enter(Expect::Column)
             }
             "WITH" => self.enter(Expect::Property),
-            "VALUES" | "LIMIT" | "OFFSET" | "IN" | "LIKE" | "ILIKE" => self.enter(Expect::Value),
+            "VALUES" | "LIMIT" | "OFFSET" | "IN" | "LIKE" | "ILIKE" | "CONTAINS" => {
+                self.enter(Expect::Value)
+            }
             // Before a pending table or namespace name, `IF [NOT] EXISTS`
             // modifies it and opens no clause.
             "IF" if !matches!(self.expect, Expect::Table | Expect::Schema) => {
@@ -500,8 +515,8 @@ mod tests {
     use crate::sql::lex::pieces;
 
     fn roles(text: &str) -> Vec<(String, Option<Role>)> {
-        let scanned = pieces(text);
-        let analysis = resolve(&scanned);
+        let scanned = pieces(Engine::Postgres, text);
+        let analysis = resolve(Engine::Postgres, &scanned);
 
         scanned
             .iter()
@@ -532,9 +547,9 @@ mod tests {
             vec![("orders".to_owned(), Some(Role::Table))]
         );
 
-        let scanned = pieces("SELECT * FROM orders");
+        let scanned = pieces(Engine::Postgres, "SELECT * FROM orders");
         assert_eq!(
-            resolve(&scanned).tables_at(scanned.len() - 1),
+            resolve(Engine::Postgres, &scanned).tables_at(scanned.len() - 1),
             &[Name {
                 namespace: None,
                 table: "orders".to_owned()
@@ -544,8 +559,8 @@ mod tests {
 
     #[test]
     fn a_statement_records_the_table_it_names_at_every_piece_of_it() {
-        let scanned = pieces("SELECT id FROM shop.orders");
-        let analysis = resolve(&scanned);
+        let scanned = pieces(Engine::Postgres, "SELECT id FROM shop.orders");
+        let analysis = resolve(Engine::Postgres, &scanned);
 
         assert_eq!(
             analysis.tables_at(2),
@@ -558,10 +573,10 @@ mod tests {
 
     #[test]
     fn a_name_is_folded_unless_it_was_quoted() {
-        let scanned = pieces("SELECT * FROM Shop.\"Orders\"");
+        let scanned = pieces(Engine::Postgres, "SELECT * FROM Shop.\"Orders\"");
 
         assert_eq!(
-            resolve(&scanned).tables_at(scanned.len() - 1),
+            resolve(Engine::Postgres, &scanned).tables_at(scanned.len() - 1),
             &[Name {
                 namespace: Some("shop".to_owned()),
                 table: "Orders".to_owned()
@@ -572,8 +587,10 @@ mod tests {
     #[test]
     fn only_a_real_dot_qualifies_a_table_whitespace_or_not() {
         let qualified = |text: &str| {
-            let scanned = pieces(text);
-            resolve(&scanned).tables_at(scanned.len() - 1).to_vec()
+            let scanned = pieces(Engine::Postgres, text);
+            resolve(Engine::Postgres, &scanned)
+                .tables_at(scanned.len() - 1)
+                .to_vec()
         };
 
         assert_eq!(
@@ -622,10 +639,10 @@ mod tests {
 
     #[test]
     fn a_comment_between_the_dot_and_its_neighbour_still_qualifies() {
-        let scanned = pieces("SELECT * FROM shop /* c */ . orders");
+        let scanned = pieces(Engine::Postgres, "SELECT * FROM shop /* c */ . orders");
 
         assert_eq!(
-            resolve(&scanned).tables_at(scanned.len() - 1),
+            resolve(Engine::Postgres, &scanned).tables_at(scanned.len() - 1),
             &[Name {
                 namespace: Some("shop".to_owned()),
                 table: "orders".to_owned()
@@ -647,8 +664,8 @@ mod tests {
 
     #[test]
     fn a_literal_is_never_a_name() {
-        let scanned = pieces("SELECT * FROM t WHERE id = 7");
-        let analysis = resolve(&scanned);
+        let scanned = pieces(Engine::Postgres, "SELECT * FROM t WHERE id = 7");
+        let analysis = resolve(Engine::Postgres, &scanned);
 
         for (index, piece) in scanned.iter().enumerate() {
             if piece.kind == Kind::Literal {
@@ -774,8 +791,8 @@ mod tests {
 
     #[test]
     fn a_second_statement_starts_a_fresh_scope() {
-        let scanned = pieces("SELECT * FROM a; SELECT * FROM b");
-        let analysis = resolve(&scanned);
+        let scanned = pieces(Engine::Postgres, "SELECT * FROM a; SELECT * FROM b");
+        let analysis = resolve(Engine::Postgres, &scanned);
         let last = scanned.len() - 1;
 
         assert_eq!(
@@ -931,8 +948,8 @@ mod tests {
     #[test]
     fn no_statement_in_the_grammar_puts_a_role_on_a_keyword_or_a_value() {
         for text in CORPUS {
-            let scanned = pieces(text);
-            let analysis = resolve(&scanned);
+            let scanned = pieces(Engine::Postgres, text);
+            let analysis = resolve(Engine::Postgres, &scanned);
 
             for (index, piece) in scanned.iter().enumerate() {
                 if matches!(piece.kind, Kind::Keyword | Kind::Literal | Kind::Whitespace) {
@@ -957,8 +974,8 @@ mod tests {
                     continue;
                 }
 
-                let scanned = pieces(&text[..cut]);
-                let analysis = resolve(&scanned);
+                let scanned = pieces(Engine::Postgres, &text[..cut]);
+                let analysis = resolve(Engine::Postgres, &scanned);
 
                 for (index, piece) in scanned.iter().enumerate() {
                     if matches!(piece.kind, Kind::Keyword | Kind::Literal | Kind::Whitespace) {
@@ -979,7 +996,11 @@ mod tests {
         let offset = text.find('|').expect("a test marks its cursor");
         let text = text.replace('|', "");
 
-        context_at(&pieces(&text), text[..offset].chars().count())
+        context_at(
+            Engine::Postgres,
+            &pieces(Engine::Postgres, &text),
+            text[..offset].chars().count(),
+        )
     }
 
     #[test]
@@ -1079,14 +1100,17 @@ mod tests {
     #[test]
     fn every_offset_of_every_statement_in_the_grammar_has_its_tables_in_scope() {
         for text in CORPUS {
-            let scanned = pieces(text);
+            let scanned = pieces(Engine::Postgres, text);
             // Only a single-statement entry has one table set for every offset.
             // The batched entry is still walked, for the panic.
-            let whole = (!text.contains(';'))
-                .then(|| resolve(&scanned).tables_at(scanned.len() - 1).to_vec());
+            let whole = (!text.contains(';')).then(|| {
+                resolve(Engine::Postgres, &scanned)
+                    .tables_at(scanned.len() - 1)
+                    .to_vec()
+            });
 
             for offset in 0..=text.chars().count() {
-                let at = context_at(&scanned, offset);
+                let at = context_at(Engine::Postgres, &scanned, offset);
 
                 if let Some(whole) = &whole {
                     assert_eq!(
@@ -1121,8 +1145,8 @@ mod tests {
 
     #[test]
     fn explain_is_transparent_and_a_cte_names_its_query() {
-        let scanned = pieces("EXPLAIN SELECT * FROM shop.orders");
-        let analysis = resolve(&scanned);
+        let scanned = pieces(Engine::Postgres, "EXPLAIN SELECT * FROM shop.orders");
+        let analysis = resolve(Engine::Postgres, &scanned);
         assert_eq!(analysis.statement_at(0), Statement::Select);
         assert_eq!(analysis.tables_at(scanned.len() - 1).len(), 1);
 

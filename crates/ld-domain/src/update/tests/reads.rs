@@ -37,7 +37,7 @@ fn a_stated_column_width_is_the_grids_cap() {
 }
 
 fn statement_subject_from(sql: &str) -> LogSubject {
-    statement_subject(&Statement::typed(sql))
+    statement_subject(&Statement::typed(crate::Engine::Postgres, sql))
 }
 
 fn executed_query(effects: &[Effect]) -> QueryId {
@@ -159,6 +159,7 @@ fn enter_on_a_table_reads_it() {
                 conn,
                 query,
                 stmt: Box::new(Statement::select_all(
+                    crate::Engine::Postgres,
                     "shop",
                     "orders",
                     &["id".to_owned(), "created_at".to_owned()]
@@ -167,6 +168,7 @@ fn enter_on_a_table_reads_it() {
                 cursor: None,
             },
             Effect::RecordHistory(Box::new(Statement::select_all(
+                crate::Engine::Postgres,
                 "shop",
                 "orders",
                 &["id".to_owned(), "created_at".to_owned()]

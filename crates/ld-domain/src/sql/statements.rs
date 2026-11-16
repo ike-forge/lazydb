@@ -1,7 +1,9 @@
 //! The buffer split into runnable statements: at every `;` the lexer did not
-//! read inside a string, a quoted name, a dollar-quoted body or a comment.
+//! read inside a string, a quoted name, a dollar-quoted body or a comment. A
+//! CQL batch is one statement: the protocol sends one per request.
 
 use super::lex::{Kind, pieces};
+use crate::engine::Engine;
 
 /// Counts `char`s, as `Editor`'s cursor does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,23 +22,32 @@ impl Span {
 /// Whitespace and comments between statements fall outside every span. A
 /// trailing `;` belongs to its statement.
 #[must_use]
-pub fn statements(text: &str) -> Vec<Span> {
+pub fn statements(engine: Engine, text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut at = 0;
     let mut start = None;
     let mut end = 0;
+    let mut batched = false;
 
-    for piece in pieces(text) {
+    for piece in pieces(engine, text) {
         let next = at + piece.text.chars().count();
 
         match piece.kind {
             Kind::Whitespace | Kind::Comment => {}
-            Kind::Punctuation if piece.text == ";" => {
+            Kind::Punctuation if piece.text == ";" && !batched => {
                 if let Some(start) = start.take() {
                     spans.push(Span { start, end: next });
                 }
             }
             _ => {
+                if engine == Engine::Cassandra && piece.kind == Kind::Keyword {
+                    match piece.text.to_ascii_uppercase().as_str() {
+                        "BEGIN" => batched = true,
+                        "APPLY" => batched = false,
+                        _ => {}
+                    }
+                }
+
                 start.get_or_insert(at);
                 end = next;
             }
@@ -57,7 +68,7 @@ mod tests {
     use super::*;
 
     fn split(text: &str) -> Vec<String> {
-        statements(text)
+        statements(Engine::Postgres, text)
             .into_iter()
             .map(|span| span.of(text))
             .collect()
@@ -65,8 +76,8 @@ mod tests {
 
     #[test]
     fn an_empty_buffer_holds_no_statement() {
-        assert!(statements("").is_empty());
-        assert!(statements("   \n\t ").is_empty());
+        assert!(statements(Engine::Postgres, "").is_empty());
+        assert!(statements(Engine::Postgres, "   \n\t ").is_empty());
     }
 
     #[test]
@@ -90,7 +101,7 @@ mod tests {
         let text = "\n  SELECT 1;\n\n  SELECT 2\n";
 
         assert_eq!(split(text), ["SELECT 1;", "SELECT 2"]);
-        assert_eq!(statements(text)[0].start, 3);
+        assert_eq!(statements(Engine::Postgres, text)[0].start, 3);
     }
 
     #[test]
@@ -120,7 +131,7 @@ mod tests {
 
     #[test]
     fn a_stray_semicolon_yields_no_empty_statement() {
-        assert!(statements(";").is_empty());
+        assert!(statements(Engine::Postgres, ";").is_empty());
         assert_eq!(split(";;SELECT 1;;"), ["SELECT 1;"]);
     }
 
@@ -129,7 +140,7 @@ mod tests {
         let text = "SELECT 'café';SELECT 1";
 
         assert_eq!(split(text), ["SELECT 'café';", "SELECT 1"]);
-        assert_eq!(statements(text)[1].start, 14);
+        assert_eq!(statements(Engine::Postgres, text)[1].start, 14);
     }
 
     #[test]
@@ -146,6 +157,37 @@ mod tests {
         assert_eq!(
             split(&format!("{create} SELECT f();")),
             [create, "SELECT f();"]
+        );
+    }
+
+    fn cql(text: &str) -> Vec<String> {
+        statements(Engine::Cassandra, text)
+            .into_iter()
+            .map(|span| span.of(text))
+            .collect()
+    }
+
+    #[test]
+    fn a_batch_is_one_statement_however_many_semicolons_it_holds() {
+        let batch = "BEGIN BATCH \
+                     INSERT INTO a (id) VALUES (1); \
+                     INSERT INTO b (id) VALUES (2); \
+                     APPLY BATCH";
+
+        assert_eq!(cql(batch), [batch]);
+        assert_eq!(split(batch).len(), 3, "Postgres has no batch");
+    }
+
+    #[test]
+    fn a_statement_after_a_batch_is_its_own() {
+        let text = "BEGIN BATCH INSERT INTO a (id) VALUES (1); APPLY BATCH; SELECT * FROM a";
+
+        assert_eq!(
+            cql(text),
+            [
+                "BEGIN BATCH INSERT INTO a (id) VALUES (1); APPLY BATCH;",
+                "SELECT * FROM a"
+            ]
         );
     }
 }

@@ -87,6 +87,11 @@ fn value_bytes(value: &Value) -> u64 {
         | Value::Array(text)
         | Value::Json(text) => text.len() as u64,
         Value::Blob(bytes) => bytes.len() as u64,
+        Value::List(values) | Value::Set(values) => values.iter().map(value_bytes).sum(),
+        Value::Map(entries) => entries
+            .iter()
+            .map(|(key, value)| value_bytes(key) + value_bytes(value))
+            .sum(),
     };
 
     VALUE_OVERHEAD + payload
@@ -603,7 +608,7 @@ mod tests {
         panel.requested(
             QueryId::next(),
             Subject::Table(TableRef::new("shop", "users")),
-            Statement::typed("SELECT * FROM shop.users"),
+            Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.users"),
         );
 
         assert_eq!(

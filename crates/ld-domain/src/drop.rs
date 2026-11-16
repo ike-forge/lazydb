@@ -1,6 +1,7 @@
 //! Dropping a namespace or table, or deleting rows, behind a confirmation.
 
 use crate::contents::TableRef;
+use crate::engine::Engine;
 use crate::key::{self, RowKey};
 use crate::line::Line;
 use crate::model::{Row, SchemaKind, Statement, Table};
@@ -27,6 +28,7 @@ impl Target {
     /// supplies the key: the page only has the columns a `SELECT` returned.
     #[must_use]
     pub fn rows<'a>(
+        engine: Engine,
         table: &TableRef,
         schema_table: &Table,
         columns: &[String],
@@ -39,7 +41,7 @@ impl Target {
         }
 
         let keys: Vec<RowKey> = selected
-            .map(|row| RowKey::of(&key, columns, row))
+            .map(|row| RowKey::of(engine, &key, columns, row))
             .collect::<Option<Vec<_>>>()?;
 
         (!keys.is_empty()).then(|| Self::Rows {
@@ -57,15 +59,15 @@ impl Target {
     }
 
     #[must_use]
-    pub fn statement(&self) -> Statement {
+    pub fn statement(&self, engine: Engine) -> Statement {
         match self {
-            Self::Schema { name, .. } => Statement::drop_schema(name),
-            Self::Table(table) => Statement::drop_table(&table.namespace, &table.table),
+            Self::Schema { name, .. } => Statement::drop_schema(engine, name),
+            Self::Table(table) => Statement::drop_table(engine, &table.namespace, &table.table),
             Self::Rows { table, keys } => {
                 let pairs: Vec<Vec<(String, String)>> =
                     keys.iter().map(|key| key.pairs().to_vec()).collect();
 
-                Statement::delete_rows(&table.namespace, &table.table, &pairs)
+                Statement::delete_rows(engine, &table.namespace, &table.table, &pairs)
             }
         }
     }
@@ -97,7 +99,7 @@ impl Target {
     }
 
     #[must_use]
-    pub fn title(&self) -> Vec<Segment> {
+    pub fn title(&self, engine: Engine) -> Vec<Segment> {
         match self {
             Self::Schema {
                 name: namespace,
@@ -109,7 +111,7 @@ impl Target {
                 };
 
                 vec![
-                    Segment::plain("Drop namespace "),
+                    Segment::plain(format!("Drop {} ", engine.namespace())),
                     Segment::styled(namespace.clone(), token),
                 ]
             }
@@ -147,6 +149,7 @@ pub enum Answer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropPrompt {
+    engine: Engine,
     target: Target,
     answer: Answer,
 }
@@ -155,10 +158,10 @@ impl DropPrompt {
     /// A namespace is always typed; a protected connection raises a table to the
     /// same bar.
     #[must_use]
-    pub fn opened(target: Target, posture: Posture) -> Self {
+    pub fn opened(engine: Engine, target: Target, posture: Posture) -> Self {
         // Read off the statement: `Protected` is about destructive statements,
         // and a row delete is a `Write`.
-        let destructive = target.statement().kind.is_destructive();
+        let destructive = target.statement(engine).kind.is_destructive();
         let typed = matches!(target, Target::Schema { .. })
             || (posture.requires_confirmation() && destructive);
         let answer = if typed {
@@ -167,7 +170,11 @@ impl DropPrompt {
             Answer::YesNo
         };
 
-        Self { target, answer }
+        Self {
+            engine,
+            target,
+            answer,
+        }
     }
 
     #[must_use]
@@ -209,12 +216,12 @@ impl DropPrompt {
 
     #[must_use]
     pub fn statement(&self) -> Statement {
-        self.target.statement()
+        self.target.statement(self.engine)
     }
 
     #[must_use]
     pub fn title(&self) -> Vec<Segment> {
-        self.target.title()
+        self.target.title(self.engine)
     }
 }
 
@@ -244,22 +251,22 @@ mod tests {
     #[test]
     fn a_namespace_is_always_typed_back() {
         for posture in [Posture::Writable, Posture::Protected] {
-            assert!(DropPrompt::opened(namespace(), posture).takes_text());
+            assert!(DropPrompt::opened(Engine::Postgres, namespace(), posture).takes_text());
         }
     }
 
     #[test]
     fn a_table_is_yes_or_no_until_the_posture_is_protected() {
         assert_eq!(
-            DropPrompt::opened(table(), Posture::Writable).answer(),
+            DropPrompt::opened(Engine::Postgres, table(), Posture::Writable).answer(),
             &Answer::YesNo
         );
-        assert!(DropPrompt::opened(table(), Posture::Protected).takes_text());
+        assert!(DropPrompt::opened(Engine::Postgres, table(), Posture::Protected).takes_text());
     }
 
     #[test]
     fn a_typed_confirmation_runs_only_on_the_name_it_asked_for() {
-        let mut prompt = DropPrompt::opened(namespace(), Posture::Writable);
+        let mut prompt = DropPrompt::opened(Engine::Postgres, namespace(), Posture::Writable);
         assert!(!prompt.confirmed(), "an empty field confirms nothing");
 
         typing(&mut prompt, "sho");
@@ -273,6 +280,7 @@ mod tests {
     fn a_name_is_matched_verbatim_rather_than_folded() {
         // The field asks for what the tree draws, not the folded name.
         let mut prompt = DropPrompt::opened(
+            Engine::Postgres,
             Target::Schema {
                 name: "MyKs".to_owned(),
                 kind: SchemaKind::User,
@@ -286,18 +294,30 @@ mod tests {
 
     #[test]
     fn a_yes_no_confirmation_is_never_confirmed_by_a_line_it_does_not_have() {
-        assert!(!DropPrompt::opened(table(), Posture::Writable).confirmed());
+        assert!(!DropPrompt::opened(Engine::Postgres, table(), Posture::Writable).confirmed());
     }
 
     #[test]
     fn a_table_drops_only_the_table_and_a_namespace_the_whole_namespace() {
-        assert_eq!(table().statement().sql, "DROP TABLE \"shop\".\"orders\"");
-        assert_eq!(namespace().statement().sql, "DROP SCHEMA \"shop\"");
+        assert_eq!(
+            table().statement(Engine::Postgres).sql,
+            "DROP TABLE \"shop\".\"orders\""
+        );
+        assert_eq!(
+            namespace().statement(Engine::Postgres).sql,
+            "DROP SCHEMA \"shop\""
+        );
     }
 
     #[test]
     fn the_title_names_the_node_the_tree_was_standing_on() {
-        assert_eq!(style::text(&table().title()), "Drop table shop.orders");
-        assert_eq!(style::text(&namespace().title()), "Drop namespace shop");
+        assert_eq!(
+            style::text(&table().title(Engine::Postgres)),
+            "Drop table shop.orders"
+        );
+        assert_eq!(
+            style::text(&namespace().title(Engine::Postgres)),
+            "Drop schema shop"
+        );
     }
 }

@@ -95,6 +95,7 @@ fn statement(kind: StatementKind) -> Statement {
     Statement {
         sql: "SELECT * FROM ks.t".to_owned(),
         kind,
+        engine: crate::Engine::Postgres,
     }
 }
 
@@ -249,7 +250,7 @@ fn grid_of_rows(columns: usize, rows: usize, width: usize) -> State {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -320,7 +321,7 @@ fn grid_of_named_cells(columns: usize, rows: usize) -> State {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -510,7 +511,7 @@ fn grid_over(
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -552,7 +553,7 @@ fn contents_showing(rows: usize) -> State {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -572,7 +573,7 @@ fn contents_showing_more(rows: usize) -> State {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        Statement::select_all("shop", "orders", &[]),
+        Statement::select_all(crate::Engine::Postgres, "shop", "orders", &[]),
     );
     state.contents.page_ready(
         query,
@@ -628,7 +629,7 @@ fn editable_grid_at(rows: usize, posture: Posture) -> State {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "orders")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,

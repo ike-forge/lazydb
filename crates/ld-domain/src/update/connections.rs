@@ -199,6 +199,7 @@ pub(super) fn connect(state: &mut State, target: ConnectionConfig) -> Vec<Effect
         conn,
         name: target.name.clone(),
     };
+    state.queries.speak(target.engine());
     state.log.push(Entry::new(
         state.now,
         sentence(format!("Connecting to {}", target.name.as_str())),
@@ -350,10 +351,10 @@ pub(super) fn schema_loaded(
             .complete(Trace::Catalog(conn), Outcome::Succeeded { detail, took });
         if state.config.log.catalog == CatalogQueries::Shown {
             // Sent together, so one duration for all of them.
-            for (reads, sql) in crate::introspection::ALL {
+            for (reads, sql) in crate::introspection::queries(state.engine()) {
                 state.log.push(Entry::new(
                     state.now,
-                    LogSubject::Statement(crate::sql::issued(sql)),
+                    LogSubject::Statement(crate::sql::issued(state.engine(), sql)),
                     Outcome::Succeeded {
                         detail: format!("catalog: {reads}"),
                         took,

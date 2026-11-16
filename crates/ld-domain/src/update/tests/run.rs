@@ -20,11 +20,17 @@ fn ctrl_r_runs_the_query_buffer() {
             Effect::ExecutePaged {
                 conn: current_conn(&state),
                 query,
-                stmt: Box::new(Statement::typed("SELECT * FROM shop.orders")),
+                stmt: Box::new(Statement::typed(
+                    crate::Engine::Postgres,
+                    "SELECT * FROM shop.orders"
+                )),
                 page_size: crate::config::PageSize::try_new(200).expect("in range"),
                 cursor: None,
             },
-            Effect::RecordHistory(Box::new(Statement::typed("SELECT * FROM shop.orders"))),
+            Effect::RecordHistory(Box::new(Statement::typed(
+                crate::Engine::Postgres,
+                "SELECT * FROM shop.orders"
+            ))),
             Effect::SaveHistory {
                 connection: ConnectionName::try_new("local").expect("a valid name"),
                 entries: vec!["SELECT * FROM shop.orders".to_owned()],

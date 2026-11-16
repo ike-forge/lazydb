@@ -1,6 +1,7 @@
 //! One row's primary key as the `WHERE` that addresses it, for `d`'s `DELETE`
 //! and `ctrl-s`'s `UPDATE`.
 
+use crate::engine::Engine;
 use crate::model::{Row, Table};
 
 /// The one fallible constructor means no `WHERE` is ever written from a guess.
@@ -11,11 +12,11 @@ impl RowKey {
     /// `None` where any key column is missing or unspellable. `key` is `(name,
     /// declared type)` in key order.
     #[must_use]
-    pub fn of(key: &[(&str, &str)], columns: &[String], row: &Row) -> Option<Self> {
+    pub fn of(engine: Engine, key: &[(&str, &str)], columns: &[String], row: &Row) -> Option<Self> {
         key.iter()
             .map(|(name, data_type)| {
                 let at = columns.iter().position(|column| column == name)?;
-                let literal = crate::literal::key(data_type, row.values.get(at)?)?;
+                let literal = crate::literal::key(engine, data_type, row.values.get(at)?)?;
 
                 Some(((*name).to_owned(), literal))
             })
@@ -51,6 +52,7 @@ mod tests {
     #[test]
     fn a_key_is_spelled_in_key_order_whatever_order_the_page_is_in() {
         let key = RowKey::of(
+            Engine::Postgres,
             &[("id", "int"), ("placed", "date")],
             &["placed".to_owned(), "note".to_owned(), "id".to_owned()],
             &row(vec![
@@ -76,6 +78,7 @@ mod tests {
     fn a_key_column_the_page_lacks_spells_nothing() {
         assert_eq!(
             RowKey::of(
+                Engine::Postgres,
                 &[("id", "int")],
                 &["note".to_owned()],
                 &row(vec![Value::Text("x".to_owned())])
@@ -88,6 +91,7 @@ mod tests {
     fn a_key_column_holding_a_value_with_no_literal_spells_nothing() {
         assert_eq!(
             RowKey::of(
+                Engine::Postgres,
                 &[("total", "double")],
                 &["total".to_owned()],
                 &row(vec![Value::Float(0.5)])

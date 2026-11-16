@@ -181,7 +181,7 @@ impl Inspector {
         // Opening a field and pressing `⏎` leaves the column unset.
         let blank = field.line().text().is_empty();
         let keeps_blank = blank
-            && crate::edit::takes_empty(field.data_type())
+            && crate::edit::takes_empty(field.engine(), field.data_type())
             && (field.touched() || typed.contains_key(&at));
 
         if let Some(edited) = field.parsed()
@@ -452,12 +452,53 @@ pub fn lines(value: &Value) -> Vec<String> {
         Value::Text(text) | Value::Json(text) => json(text).unwrap_or_else(|| vec![text.clone()]),
         Value::Array(text) => crate::array::parse(text)
             .map_or_else(|| vec![text.clone()], |elements| array_lines(&elements)),
-        other => vec![cell::text(other)],
+        other => nested(other),
     };
 
     laid.into_iter()
         .map(|line| line.chars().filter(|c| !c.is_control()).collect())
         .collect()
+}
+
+/// A collection an element a line, nested ones indented, as JSON reads.
+fn nested(value: &Value) -> Vec<String> {
+    match value {
+        Value::List(values) => bracketed(values.iter().map(|value| (None, value)), '[', ']'),
+        Value::Set(values) => bracketed(values.iter().map(|value| (None, value)), '{', '}'),
+        Value::Map(entries) => bracketed(
+            entries.iter().map(|(key, value)| (Some(key), value)),
+            '{',
+            '}',
+        ),
+        other => vec![cell::text(other)],
+    }
+}
+
+fn bracketed<'a>(
+    entries: impl ExactSizeIterator<Item = (Option<&'a Value>, &'a Value)>,
+    open: char,
+    close: char,
+) -> Vec<String> {
+    let count = entries.len();
+    if count == 0 {
+        return vec![format!("{open}{close}")];
+    }
+
+    let mut lines = vec![open.to_string()];
+    for (at, (key, value)) in entries.enumerate() {
+        let mut element = nested(value);
+        if let (Some(key), Some(first)) = (key, element.first_mut()) {
+            *first = format!("{}: {first}", cell::text(key));
+        }
+        if at + 1 < count
+            && let Some(last) = element.last_mut()
+        {
+            last.push(',');
+        }
+        lines.extend(element.into_iter().map(|line| format!("  {line}")));
+    }
+    lines.push(close.to_string());
+    lines
 }
 
 /// Braced, as Postgres writes an array; nulls bare and text unquoted, as the
@@ -599,6 +640,23 @@ mod tests {
 
     fn text(value: &str) -> Value {
         Value::Text(value.to_owned())
+    }
+
+    #[test]
+    fn a_collection_is_laid_out_an_element_a_line() {
+        let value = Value::Map(vec![
+            (
+                Value::Text("a".to_owned()),
+                Value::List(vec![Value::Int(1), Value::Int(2)]),
+            ),
+            (Value::Text("b".to_owned()), Value::Set(Vec::new())),
+        ]);
+
+        assert_eq!(
+            lines(&value),
+            ["{", "  a: [", "    1,", "    2", "  ],", "  b: {}", "}"]
+        );
+        assert_eq!(lines(&Value::List(Vec::new())), ["[]"]);
     }
 
     #[test]

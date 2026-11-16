@@ -1,7 +1,9 @@
-//! SQL split into the runs a reader distinguishes. A scanner, not a parser: a
-//! formatter that reordered a misparsed clause would change the statement.
+//! A statement split into the runs a reader distinguishes. A scanner, not a
+//! parser: a formatter that reordered a misparsed clause would change the
+//! statement. SQL and CQL share quoting; the engine decides the rest.
 
 use super::keywords;
+use crate::engine::Engine;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -21,13 +23,13 @@ pub(crate) struct Piece {
 }
 
 /// Lossless: concatenating every `Piece::text` reproduces the input.
-pub(crate) fn pieces(text: &str) -> Vec<Piece> {
+pub(crate) fn pieces(engine: Engine, text: &str) -> Vec<Piece> {
     let source: Vec<char> = text.chars().collect();
     let mut pieces = Vec::new();
     let mut at = 0;
 
     while at < source.len() {
-        let (kind, len) = run(&source, at);
+        let (kind, len) = run(engine, &source, at);
         pieces.push(Piece {
             kind,
             text: source[at..at + len].iter().collect(),
@@ -39,7 +41,7 @@ pub(crate) fn pieces(text: &str) -> Vec<Piece> {
 }
 
 /// Never zero.
-fn run(source: &[char], at: usize) -> (Kind, usize) {
+fn run(engine: Engine, source: &[char], at: usize) -> (Kind, usize) {
     let first = source[at];
 
     if first.is_whitespace() {
@@ -49,7 +51,7 @@ fn run(source: &[char], at: usize) -> (Kind, usize) {
         );
     }
 
-    if let Some(len) = comment(source, at) {
+    if let Some(len) = comment(engine, source, at) {
         return (Kind::Comment, len);
     }
 
@@ -61,27 +63,44 @@ fn run(source: &[char], at: usize) -> (Kind, usize) {
         return (Kind::Identifier, quoted(source, at, '"'));
     }
 
-    // `E'…'` escapes with backslashes; `B'…'`, `X'…'` and `U&'…'` only change
-    // what the quoted text means.
-    if let Some(len) = prefixed_string(source, at) {
-        return (Kind::Literal, len);
+    match engine {
+        Engine::Postgres => {
+            // `E'…'` escapes with backslashes; `B'…'`, `X'…'` and `U&'…'` only
+            // change what the quoted text means.
+            if let Some(len) = prefixed_string(source, at) {
+                return (Kind::Literal, len);
+            }
+        }
+        Engine::Cassandra => {
+            // Before words: a uuid may open with a hex letter, and its dashes
+            // would otherwise format as subtraction.
+            if first.is_ascii_hexdigit()
+                && let Some(len) = uuid(source, at)
+            {
+                return (Kind::Literal, len);
+            }
+        }
     }
 
     if first.is_ascii_digit()
         || (first == '.' && source.get(at + 1).is_some_and(char::is_ascii_digit))
     {
-        return (Kind::Literal, number(source, at));
+        return (Kind::Literal, number(engine, source, at));
     }
 
     if first.is_alphabetic() || first == '_' {
-        let len = while_matching(source, at, |c| c.is_alphanumeric() || c == '_' || c == '$');
+        // Postgres takes `$` inside a name.
+        let dollar = engine == Engine::Postgres;
+        let len = while_matching(source, at, |c| {
+            c.is_alphanumeric() || c == '_' || (dollar && c == '$')
+        });
         let word: String = source[at..at + len].iter().collect();
 
-        if keywords::is_value_word(&word) {
+        if keywords::is_value_word(engine, &word) {
             return (Kind::Literal, len);
         }
 
-        let kind = if keywords::is_keyword(&word) {
+        let kind = if keywords::is_keyword(engine, &word) {
             Kind::Keyword
         } else {
             Kind::Identifier
@@ -90,9 +109,21 @@ fn run(source: &[char], at: usize) -> (Kind, usize) {
         return (kind, len);
     }
 
+    // `:name` is a CQL bind marker.
+    if engine == Engine::Cassandra
+        && first == ':'
+        && source
+            .get(at + 1)
+            .is_some_and(|next| next.is_alphabetic() || *next == '_')
+    {
+        let len = while_matching(source, at + 1, |c| c.is_alphanumeric() || c == '_');
+        return (Kind::Identifier, len + 1);
+    }
+
+    // CQL's `$$…$$` is Postgres's dollar quote with an empty tag.
     if first == '$' {
         // `$1`: a parameter stands for a value.
-        if source.get(at + 1).is_some_and(char::is_ascii_digit) {
+        if engine == Engine::Postgres && source.get(at + 1).is_some_and(char::is_ascii_digit) {
             return (
                 Kind::Literal,
                 1 + while_matching(source, at + 1, |c| c.is_ascii_digit()),
@@ -106,13 +137,21 @@ fn run(source: &[char], at: usize) -> (Kind, usize) {
     (Kind::Punctuation, 1)
 }
 
-/// An unterminated block runs to the end of the buffer. Blocks nest, as
-/// Postgres's do.
-fn comment(source: &[char], at: usize) -> Option<usize> {
+/// An unterminated block runs to the end of the buffer. Postgres's blocks
+/// nest; CQL's do not, and `//` is a CQL line comment.
+fn comment(engine: Engine, source: &[char], at: usize) -> Option<usize> {
     let pair = (source[at], *source.get(at + 1)?);
 
     match pair {
         ('-', '-') => Some(while_matching(source, at, |c| c != '\n')),
+        ('/', '/') if engine == Engine::Cassandra => {
+            Some(while_matching(source, at, |c| c != '\n'))
+        }
+        ('/', '*') if engine == Engine::Cassandra => {
+            let close = (at + 2..source.len())
+                .find(|&end| source[end] == '*' && source.get(end + 1) == Some(&'/'));
+            Some(close.map_or(source.len() - at, |end| end + 2 - at))
+        }
         ('/', '*') => {
             let mut depth = 0_usize;
             let mut end = at;
@@ -201,11 +240,16 @@ fn dollar_quoted(source: &[char], at: usize) -> Option<usize> {
 }
 
 /// `0x`, `0o` and `0b` integers and `_` separators are Postgres 16's; an older
-/// server rejects them, which is its error to report.
-fn number(source: &[char], at: usize) -> usize {
-    if source[at] == '0' && matches!(source.get(at + 1), Some('x' | 'X' | 'o' | 'O' | 'b' | 'B')) {
+/// server rejects them, which is its error to report. CQL's `0x…` is a blob.
+fn number(engine: Engine, source: &[char], at: usize) -> usize {
+    let radix = match engine {
+        Engine::Postgres => matches!(source.get(at + 1), Some('x' | 'X' | 'o' | 'O' | 'b' | 'B')),
+        Engine::Cassandra => matches!(source.get(at + 1), Some('x' | 'X')),
+    };
+    if source[at] == '0' && radix {
         return while_matching(source, at + 2, |c| c.is_alphanumeric() || c == '_') + 2;
     }
+    let separators = engine == Engine::Postgres;
 
     let mut end = at;
     while end < source.len() {
@@ -220,7 +264,7 @@ fn number(source: &[char], at: usize) -> usize {
 
         if !(character.is_ascii_digit()
             || character == '.'
-            || character == '_'
+            || (separators && character == '_')
             || exponent_sign
             || exponent)
         {
@@ -231,6 +275,37 @@ fn number(source: &[char], at: usize) -> usize {
     }
 
     end - at
+}
+
+fn uuid(source: &[char], at: usize) -> Option<usize> {
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    let mut end = at;
+
+    for (index, group) in GROUPS.iter().enumerate() {
+        if index > 0 {
+            if source.get(end) != Some(&'-') {
+                return None;
+            }
+            end += 1;
+        }
+
+        for _ in 0..*group {
+            if !source.get(end)?.is_ascii_hexdigit() {
+                return None;
+            }
+            end += 1;
+        }
+    }
+
+    // A longer word starting with a uuid is a word.
+    if source
+        .get(end)
+        .is_some_and(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+    {
+        return None;
+    }
+
+    Some(end - at)
 }
 
 fn while_matching(source: &[char], at: usize, matches: impl Fn(char) -> bool) -> usize {
@@ -247,7 +322,11 @@ mod tests {
     use super::*;
 
     fn kinds(text: &str) -> Vec<(Kind, String)> {
-        pieces(text)
+        kinds_in(Engine::Postgres, text)
+    }
+
+    fn kinds_in(engine: Engine, text: &str) -> Vec<(Kind, String)> {
+        pieces(engine, text)
             .into_iter()
             .filter(|piece| piece.kind != Kind::Whitespace)
             .map(|piece| (piece.kind, piece.text))
@@ -262,7 +341,7 @@ mod tests {
     fn every_character_lands_in_exactly_one_piece() {
         let text = "SELECT * FROM shop.orders WHERE id = 7; -- done\n";
 
-        let rebuilt: String = pieces(text)
+        let rebuilt: String = pieces(Engine::Postgres, text)
             .iter()
             .map(|piece| piece.text.as_str())
             .collect();
@@ -453,5 +532,56 @@ mod tests {
         for word in ["type", "key", "comment", "name", "first"] {
             assert_eq!(kinds_only(word), [Kind::Identifier], "{word}");
         }
+    }
+
+    fn cql(text: &str) -> Vec<Kind> {
+        kinds_in(Engine::Cassandra, text)
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect()
+    }
+
+    #[test]
+    fn a_cql_uuid_is_one_literal_and_not_three_subtractions() {
+        for uuid in [
+            "123e4567-e89b-12d3-a456-426614174000",
+            "c1000000-0000-4000-8000-000000000002",
+        ] {
+            assert_eq!(cql(uuid), [Kind::Literal], "{uuid}");
+        }
+        assert_eq!(cql("deadbeef"), [Kind::Identifier]);
+    }
+
+    #[test]
+    fn a_cql_bind_marker_names_a_value_the_way_a_column_does() {
+        assert_eq!(
+            kinds_in(Engine::Cassandra, ":since"),
+            [(Kind::Identifier, ":since".to_owned())]
+        );
+        assert_eq!(
+            kinds_only("1::text")[1..3],
+            [Kind::Punctuation, Kind::Punctuation],
+            "Postgres reads a cast, not a marker"
+        );
+    }
+
+    #[test]
+    fn a_double_slash_is_a_cql_comment_and_cql_blocks_do_not_nest() {
+        assert_eq!(
+            cql("a // b\nc"),
+            [Kind::Identifier, Kind::Comment, Kind::Identifier]
+        );
+        assert_eq!(
+            cql("/* a /* b */ c"),
+            [Kind::Comment, Kind::Identifier],
+            "the first terminator closes it"
+        );
+    }
+
+    #[test]
+    fn cql_has_no_prefixed_strings_and_a_dollar_string_is_a_literal() {
+        assert_eq!(cql("E'x'"), [Kind::Identifier, Kind::Literal]);
+        assert_eq!(cql("$$a;b$$"), [Kind::Literal]);
+        assert_eq!(cql("0xCAFE"), [Kind::Literal]);
     }
 }

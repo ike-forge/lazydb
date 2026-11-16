@@ -2,7 +2,9 @@
 //! the session's pipeline, their rows into our [`Catalog`].
 
 use ld_domain::Engine;
-use ld_domain::introspection::{COLUMNS, CONSTRAINTS, INDEXES, RELATIONS, SCHEMAS, SERVER};
+use ld_domain::introspection::postgres::{
+    COLUMNS, CONSTRAINTS, INDEXES, RELATIONS, SCHEMAS, SERVER,
+};
 use ld_domain::model::{
     Catalog, Column, ColumnDefault, ColumnKind, Constraint, ConstraintKind, DbError, ForeignKey,
     Index, PrimaryKey, RelationKind, RelationRef, Schema, Server, Table,

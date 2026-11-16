@@ -321,7 +321,7 @@ mod tests {
         let cluster =
             FakeCluster::default().paging(vec![page(1, Some(1)), page(2, Some(2)), page(3, None)]);
         let conn = ConnId::next();
-        let stmt = Statement::typed("SELECT * FROM shop.orders");
+        let stmt = Statement::typed(ld_domain::Engine::Postgres, "SELECT * FROM shop.orders");
 
         let first = cluster
             .execute_paged(conn, &stmt, PageSize::default(), None)
@@ -351,7 +351,7 @@ mod tests {
         let page = cluster
             .execute_paged(
                 ConnId::next(),
-                &Statement::typed("SELECT 1"),
+                &Statement::typed(ld_domain::Engine::Postgres, "SELECT 1"),
                 PageSize::default(),
                 None,
             )

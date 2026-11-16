@@ -1,10 +1,12 @@
 //! Typing a value back, and the uncommitted set holding it until `ctrl-s`.
 //! Postgres parses what is typed, through [`crate::literal`]'s cast; only what
 //! the grid must draw differently is read here, so a typo in an integer or a
-//! `bytea` is caught before it is sent.
+//! `bytea` is caught before it is sent. Cassandra has no cast from text, so
+//! only the types CQL spells plainly take typed text.
 
 use std::collections::BTreeMap;
 
+use crate::engine::Engine;
 use crate::line::Line;
 use crate::literal;
 use crate::model::Value;
@@ -70,29 +72,67 @@ fn family(data_type: &str) -> Family {
     }
 }
 
-/// Every type takes typed text; Postgres is the judge of the rest.
+/// Postgres: every type takes typed text, and Postgres is the judge of the
+/// rest. Cassandra: collections, tuples and user types do not.
 #[must_use]
-pub fn editable(_data_type: &str) -> bool {
-    true
+pub fn editable(engine: Engine, data_type: &str) -> bool {
+    match engine {
+        Engine::Postgres => true,
+        Engine::Cassandra => matches!(
+            literal::normalised(data_type).as_str(),
+            "text"
+                | "varchar"
+                | "ascii"
+                | "inet"
+                | "date"
+                | "time"
+                | "timestamp"
+                | "duration"
+                | "uuid"
+                | "timeuuid"
+                | "tinyint"
+                | "smallint"
+                | "int"
+                | "bigint"
+                | "varint"
+                | "decimal"
+                | "float"
+                | "double"
+                | "boolean"
+                | "blob"
+        ),
+    }
 }
 
 /// A blank field is the empty string for text; for anything else it is
 /// `NULL`, which [`parse`] returns.
 #[must_use]
-pub fn takes_empty(data_type: &str) -> bool {
-    family(data_type) == Family::Text
+pub fn takes_empty(engine: Engine, data_type: &str) -> bool {
+    match engine {
+        Engine::Postgres => family(data_type) == Family::Text,
+        Engine::Cassandra => matches!(
+            literal::normalised(data_type).as_str(),
+            "text" | "varchar" | "ascii"
+        ),
+    }
 }
 
 /// `None` where the text cannot be the type: the field says so before
 /// anything is sent.
 #[must_use]
-pub fn parse(data_type: &str, text: &str) -> Option<Edited> {
-    let family = family(data_type);
-    let trimmed = text.trim();
-
-    if trimmed.is_empty() && family != Family::Text {
+pub fn parse(engine: Engine, data_type: &str, text: &str) -> Option<Edited> {
+    if text.trim().is_empty() && !takes_empty(engine, data_type) {
         return Some(null());
     }
+    match engine {
+        Engine::Postgres => postgres(data_type, text),
+        Engine::Cassandra => cassandra(data_type, text),
+    }
+}
+
+fn postgres(data_type: &str, text: &str) -> Option<Edited> {
+    let family = family(data_type);
+    let trimmed = text.trim();
 
     let value = match family {
         Family::Integer => Value::Int(trimmed.parse().ok()?),
@@ -115,7 +155,66 @@ pub fn parse(data_type: &str, text: &str) -> Option<Edited> {
     let literal = match (&value, family) {
         // As typed: an `f64` round trip would rewrite `1.50` and `1e3`.
         (Value::Float(_), _) => literal::cast(trimmed, data_type),
-        (value, _) => literal::of(data_type, value),
+        (value, _) => literal::of(Engine::Postgres, data_type, value),
+    };
+
+    Some(Edited { value, literal })
+}
+
+/// Verbatim where an `f64` round trip would rewrite `1.50` and `1e3`, or
+/// lose a wide `varint` and `decimal`.
+fn cassandra(data_type: &str, text: &str) -> Option<Edited> {
+    let trimmed = text.trim();
+    let (value, literal) = match literal::normalised(data_type).as_str() {
+        // Not validated beyond being text: the cluster owns those formats.
+        "text" | "varchar" | "ascii" | "inet" | "date" | "time" | "timestamp" | "duration" => {
+            (Value::Text(text.to_owned()), literal::quoted(text))
+        }
+        "uuid" | "timeuuid" => {
+            let uuid = trimmed.to_ascii_lowercase();
+            is_uuid(&uuid).then(|| (Value::Uuid(uuid.clone()), uuid))?
+        }
+        "tinyint" | "smallint" | "int" | "bigint" => {
+            let number: i64 = trimmed.parse().ok()?;
+            (Value::Int(number), number.to_string())
+        }
+        "varint" | "decimal" => {
+            trimmed
+                .parse::<f64>()
+                .ok()
+                .filter(|parsed| parsed.is_finite())?;
+            (Value::Numeric(trimmed.to_owned()), trimmed.to_owned())
+        }
+        "float" | "double" => {
+            let parsed = float(trimmed)?;
+            let literal = if parsed.is_finite() {
+                trimmed.to_owned()
+            } else {
+                crate::cell::text(&Value::Float(parsed))
+            };
+            (Value::Float(parsed), literal)
+        }
+        "boolean" => {
+            let flag = match trimmed.to_ascii_lowercase().as_str() {
+                "true" => true,
+                "false" => false,
+                _ => return None,
+            };
+            (Value::Boolean(flag), flag.to_string())
+        }
+        // The adapter draws a blob as cqlsh does, `0x…`, so that is what is
+        // typed back.
+        "blob" => {
+            let digits = trimmed
+                .strip_prefix("0x")
+                .or_else(|| trimmed.strip_prefix("0X"))?;
+            if digits.len() % 2 != 0 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            let blob = format!("0x{}", digits.to_ascii_lowercase());
+            (Value::Text(blob.clone()), blob)
+        }
+        _ => return None,
     };
 
     Some(Edited { value, literal })
@@ -272,6 +371,7 @@ impl Edits {
 /// change underneath.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
+    engine: Engine,
     column: usize,
     name: String,
     data_type: String,
@@ -283,14 +383,26 @@ pub struct Field {
 impl Field {
     /// Seeded with the cell's text, so an immediate `⏎` is a no-op.
     #[must_use]
-    pub fn opened(column: usize, name: &str, data_type: &str, text: String) -> Self {
+    pub fn opened(
+        engine: Engine,
+        column: usize,
+        name: &str,
+        data_type: &str,
+        text: String,
+    ) -> Self {
         Self {
+            engine,
             column,
             name: name.to_owned(),
             data_type: data_type.to_owned(),
             line: Line::new(text),
             touched: false,
         }
+    }
+
+    #[must_use]
+    pub const fn engine(&self) -> Engine {
+        self.engine
     }
 
     #[must_use]
@@ -328,7 +440,7 @@ impl Field {
 
     #[must_use]
     pub fn parsed(&self) -> Option<Edited> {
-        parse(&self.data_type, self.line.text())
+        parse(self.engine, &self.data_type, self.line.text())
     }
 
     #[must_use]
@@ -344,7 +456,7 @@ mod tests {
     use super::*;
 
     fn parsed(data_type: &str, text: &str) -> Option<(Value, String)> {
-        parse(data_type, text).map(|edited| (edited.value, edited.literal))
+        parse(Engine::Postgres, data_type, text).map(|edited| (edited.value, edited.literal))
     }
 
     #[test]
@@ -470,7 +582,7 @@ mod tests {
     }
 
     fn edit(text: &str) -> Edited {
-        parse("text", text).expect("text takes anything")
+        parse(Engine::Postgres, "text", text).expect("text takes anything")
     }
 
     #[test]
@@ -502,12 +614,54 @@ mod tests {
 
     #[test]
     fn a_field_reports_why_it_does_not_parse_and_nothing_when_it_does() {
-        let mut field = Field::opened(0, "qty", "integer", "7".to_owned());
+        let mut field = Field::opened(Engine::Postgres, 0, "qty", "integer", "7".to_owned());
         assert_eq!(field.error(), None);
 
         field.line_mut().insert('x');
 
         assert_eq!(field.error().as_deref(), Some("Not a valid integer."));
         assert_eq!(field.parsed(), None);
+    }
+
+    fn cql(data_type: &str, text: &str) -> Option<(Value, String)> {
+        parse(Engine::Cassandra, data_type, text).map(|edited| (edited.value, edited.literal))
+    }
+
+    #[test]
+    fn cql_text_is_quoted_and_a_number_keeps_the_digits_typed() {
+        assert_eq!(
+            cql("text", "o'hara"),
+            Some((Value::Text("o'hara".to_owned()), "'o''hara'".to_owned()))
+        );
+        assert_eq!(
+            cql("text", ""),
+            Some((Value::Text(String::new()), "''".to_owned()))
+        );
+        assert_eq!(
+            cql("decimal", "1.50"),
+            Some((Value::Numeric("1.50".to_owned()), "1.50".to_owned()))
+        );
+        assert_eq!(
+            cql("double", "1e3").map(|(_, literal)| literal).as_deref(),
+            Some("1e3")
+        );
+        assert_eq!(cql("int", "seven"), None);
+    }
+
+    #[test]
+    fn a_cql_blob_is_typed_as_cqlsh_prints_it_and_blank_is_null() {
+        assert_eq!(
+            cql("blob", "0xCAFE"),
+            Some((Value::Text("0xcafe".to_owned()), "0xcafe".to_owned()))
+        );
+        assert_eq!(cql("blob", "\\xcafe"), None);
+        assert_eq!(cql("int", " "), Some((Value::Null, "NULL".to_owned())));
+    }
+
+    #[test]
+    fn a_cql_collection_is_not_typed_into() {
+        assert!(!editable(Engine::Cassandra, "list<int>"));
+        assert!(editable(Engine::Cassandra, "frozen<text>"));
+        assert!(editable(Engine::Postgres, "integer[]"));
     }
 }

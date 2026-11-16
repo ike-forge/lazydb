@@ -23,7 +23,7 @@ fn contents_showing_typed(sql: &str) -> State {
     state.contents.requested(
         query,
         Subject::Typed(sql.to_owned()),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -372,7 +372,10 @@ fn exporting_the_whole_table_asks_for_it_without_a_limit() {
     assert_eq!(
         *source,
         Source::Whole {
-            statement: Box::new(Statement::typed("SELECT * FROM shop.orders")),
+            statement: Box::new(Statement::typed(
+                crate::Engine::Postgres,
+                "SELECT * FROM shop.orders"
+            )),
             limit: None,
         }
     );
@@ -396,7 +399,10 @@ fn exporting_a_typed_query_re_runs_it_verbatim() {
     assert_eq!(
         *source,
         Source::Whole {
-            statement: Box::new(Statement::typed("SELECT * FROM shop.orders LIMIT 10")),
+            statement: Box::new(Statement::typed(
+                crate::Engine::Postgres,
+                "SELECT * FROM shop.orders LIMIT 10"
+            )),
             limit: None,
         }
     );
@@ -992,7 +998,7 @@ fn confirming_re_emits_what_was_attempted_not_what_the_panel_now_holds() {
     state.contents.requested(
         query,
         Subject::Table(TableRef::new("shop", "audit_log")),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
     state.contents.page_ready(
         query,
@@ -1040,7 +1046,7 @@ fn confirming_still_exports_when_the_panel_has_moved_on_entirely() {
     state.contents.requested(
         QueryId::next(),
         Subject::Typed("SELECT 1".to_owned()),
-        crate::model::Statement::typed("SELECT * FROM shop.orders"),
+        crate::model::Statement::typed(crate::Engine::Postgres, "SELECT * FROM shop.orders"),
     );
 
     update(

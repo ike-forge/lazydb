@@ -76,7 +76,8 @@ impl CommitPrompt {
     /// since a misread scan could rewrite a literal.
     #[must_use]
     pub fn lines(&self) -> Vec<Vec<Segment>> {
-        crate::sql::highlight(&crate::sql::format(&self.statement.sql))
+        let engine = self.statement.engine;
+        crate::sql::highlight(engine, &crate::sql::format(engine, &self.statement.sql))
     }
 
     #[must_use]
@@ -198,6 +199,7 @@ mod tests {
         CommitPrompt::opened(
             TableRef::new("shop", "orders"),
             Statement::update_row(
+                crate::Engine::Postgres,
                 "shop",
                 "orders",
                 &[("note".to_owned(), "'x'".to_owned())],
@@ -236,7 +238,12 @@ mod tests {
         );
         let mut prompt = CommitPrompt::inserting(
             TableRef::new("shop", "orders"),
-            Statement::insert_row("shop", "orders", &[("id".to_owned(), "7".to_owned())]),
+            Statement::insert_row(
+                crate::Engine::Postgres,
+                "shop",
+                "orders",
+                &[("id".to_owned(), "7".to_owned())],
+            ),
             form.clone(),
         );
 
@@ -273,6 +280,7 @@ mod tests {
         let batch = CommitPrompt::opened(
             TableRef::new("shop", "orders"),
             Statement::update_rows(
+                crate::Engine::Postgres,
                 "shop",
                 "orders",
                 &[
@@ -336,6 +344,7 @@ mod tests {
     #[test]
     fn a_batch_joining_an_open_transaction_loses_its_own_begin_and_commit() {
         let batch = Statement::delete_rows(
+            crate::Engine::Postgres,
             "shop",
             "orders",
             &[
@@ -350,7 +359,9 @@ mod tests {
              DELETE FROM \"shop\".\"orders\" WHERE \"id\" = 8;"
         );
         assert_eq!(
-            Statement::typed("BEGIN; SELECT 1").joining().sql,
+            Statement::typed(crate::Engine::Postgres, "BEGIN; SELECT 1")
+                .joining()
+                .sql,
             "BEGIN; SELECT 1",
             "only the wrapping the builders write is taken off"
         );

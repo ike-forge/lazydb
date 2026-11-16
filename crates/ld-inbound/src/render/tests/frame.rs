@@ -203,9 +203,10 @@ fn the_loader_marks_the_panel_the_wait_is_for() {
 #[test]
 fn a_query_in_flight_shows_on_the_grid_it_will_fill() {
     let mut state = State::default();
-    state
-        .in_flight
-        .insert(QueryId::next(), Statement::typed("select * from k.t"));
+    state.in_flight.insert(
+        QueryId::next(),
+        Statement::typed(ld_domain::Engine::Postgres, "select * from k.t"),
+    );
     state.loader.advance(true);
 
     let buffer = draw_state(80, 24, &state);
