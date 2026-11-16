@@ -271,7 +271,7 @@ fn sift_view(sift: &Sift) -> SiftView {
 fn connection_row(config: &Config, connection: &ConnectionConfig) -> ConnectionRow {
     ConnectionRow {
         name: connection.name.as_str().to_owned(),
-        address: connection.address(),
+        address: format!("{} {}", connection.engine().key(), connection.address()),
         posture: connection.posture,
         is_default: config
             .default_connection

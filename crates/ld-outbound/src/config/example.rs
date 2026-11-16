@@ -93,11 +93,21 @@ mod tests {
             "if this matches the default the uncommenter stopped working and the test above it \
              is the only one still doing anything"
         );
+        let engines: Vec<_> = config
+            .connections
+            .iter()
+            .map(ld_domain::config::ConnectionConfig::engine)
+            .collect();
         assert_eq!(
-            config.connections.len(),
-            2,
-            "both shapes are shown, and each is a whole entry: `url` and the keys it carries \
-             cannot share one"
+            engines,
+            [
+                ld_domain::Engine::Postgres,
+                ld_domain::Engine::Postgres,
+                ld_domain::Engine::Cassandra,
+                ld_domain::Engine::Cassandra,
+            ],
+            "both Postgres shapes are shown, each a whole entry since `url` and the keys it \
+             carries cannot share one, and both Cassandra ones"
         );
         assert_eq!(config.themes.len(), 1);
         assert!(

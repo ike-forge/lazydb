@@ -221,3 +221,22 @@ fn a_config_with_nothing_wrong_opens_no_overlay() {
 
     assert!(state.overlay.is_none());
 }
+
+#[test]
+fn the_picker_names_each_connections_engine_beside_its_address() {
+    let mut config = config_of(&["pg"]);
+    config.connections.push(ConnectionConfig {
+        target: crate::config::Target::Cassandra(crate::config::CassandraTarget::at(&[
+            "10.0.0.1:9042",
+        ])),
+        ..ConnectionConfig::named(ConnectionName::try_new("cass").expect("a valid name"))
+    });
+    let state = started_on(config);
+
+    let Some(crate::OverlayView::Connections { rows, .. }) = crate::view_model(&state).overlay
+    else {
+        panic!("the picker is up");
+    };
+    let addresses: Vec<_> = rows.iter().map(|row| row.address.as_str()).collect();
+    assert_eq!(addresses, ["postgres localhost", "cassandra 10.0.0.1:9042"]);
+}

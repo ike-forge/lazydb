@@ -100,12 +100,13 @@ async fn the_catalog_lists_the_seeded_keyspaces_before_the_clusters_own() {
 
     assert_eq!(catalog.engine, Engine::Cassandra);
     assert!(catalog.server.is_none(), "a cluster has no databases");
+    // Other tests add scratch keyspaces; the seeded ones are what is pinned.
     let names: Vec<_> = catalog
         .schemas_in_display_order()
-        .take(3)
         .map(|schema| schema.name.as_str())
+        .filter(|name| ["edge_cases", "shop", "typezoo", "system"].contains(name))
         .collect();
-    assert_eq!(names, ["edge_cases", "shop", "typezoo"]);
+    assert_eq!(names, ["edge_cases", "shop", "typezoo", "system"]);
     assert_eq!(catalog.schemas["system"].kind(), SchemaKind::System);
 }
 
