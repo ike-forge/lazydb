@@ -1,0 +1,115 @@
+# LazyDB — user-level configuration.
+#
+# Written on first run; every line is commented, so this file changes nothing
+# until you uncomment something. Each key states its default.
+#
+# A project may override any of this from a `.lazydb.toml` in the
+# repository. Uncomment a key and its `[section]` header together — a key
+# without its header lands in the wrong table and is reported as unknown.
+
+# ── appearance ────────────────────────────────────────────────
+# theme      = "default-dark"   # default-dark | default-light | ash-dark |
+#                               # ash-light | beacon-dark | beacon-light |
+#                               # quill-dark | quill-light | catppuccin-latte |
+#                               # catppuccin-frappe | catppuccin-macchiato |
+#                               # catppuccin-mocha | solarized-dark |
+#                               # solarized-light | dracula | a [[themes]] name
+# background = "theme"          # "theme" | "terminal" | a hex such as "#0b0d12".
+#                               # "terminal" paints nothing, which is what lets
+#                               # a translucent or blurred terminal show
+#                               # through. A hex overrides the `base` role only.
+# icons      = true
+
+# ── input ─────────────────────────────────────────────────────
+# mouse = true
+
+# ── connections ───────────────────────────────────────────────
+# Unset by default. Stated here, ahead of the first [section] below,
+# because a root key uncommented after a table header lands in that
+# table instead and is reported as unknown.
+# default_connection = "prod"
+
+# ── panels ────────────────────────────────────────────────────
+# Percentage shares, each 5..=95.
+# [layout]
+# sidebar = 25   # the sidebar's share of the frame width
+# ddl     = 60   # Ddl's share of the sidebar's height
+# queries = 10   # Queries' share of the main column's height
+
+# ── the results grid ──────────────────────────────────────────
+# [grid]
+# max_column_width = 30    # 1..=512, in cells
+# page_rows        = 200   # 1..=100000; rows per page read into the grid
+
+# ── query history ─────────────────────────────────────────────
+# Kept per connection, between runs, in $XDG_STATE_HOME/lazydb.
+# ctrl-g in Queries opens it.
+# [history]
+# limit = 100   # 0..=10000; statements remembered per connection. 0 turns
+#               # the history off: nothing is read, kept or written.
+
+# The Logs tab (5) lists every statement you run. LazyDB's own reads of the
+# catalog are one "Reading schema" entry unless this lists each query.
+# [log]
+# catalog = false
+
+# ── the driver ────────────────────────────────────────────────
+# [driver]
+# page_size          = 5000    # 1..=100000; rows per round trip
+# request_timeout_ms = 5000    # 1..=600000
+# connect_timeout_ms = 5000    # 1..=600000
+
+# ── export ────────────────────────────────────────────────────
+# path and prefix are unset by default; an export then asks for a destination.
+# [export]
+# path         = "~/exports"
+# prefix       = "ld-"
+# clipboard_mb = 10   # 1..=1024; a larger copy fails rather than truncates
+
+# Every key but `name` is optional. One left out falls back as psql's does:
+# its PG* variable (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD,
+# PGSSLMODE), then libpq's default. Without a password, ~/.pgpass (or
+# PGPASSFILE) is read, and ignored if group or others can read it.
+# [[connections]]
+# name        = "prod"                 # required; no whitespace
+# host        = "db.internal"          # or a socket directory: "/var/run/postgresql"
+# port        = 5432
+# database    = "orders"               # unset: the user's name
+# user        = "ana"
+# password    = "hunter2"              # or { env = "ORDERS_PW" }
+#                                      # or { file = "~/.secrets/orders" }
+# posture     = "read-only"            # read-only | writable | protected
+# sslmode     = "verify-full"          # disable | prefer | require |
+#                                      # verify-ca | verify-full
+# sslrootcert = "~/certs/root.pem"     # unset: the system's roots
+# sslcert     = "~/certs/client.pem"   # a client certificate; both or neither
+# sslkey      = "~/certs/client.key"
+
+# `sslmode` is libpq's: `prefer` and `require` encrypt without checking the
+# server, `verify-ca` checks the chain, `verify-full` the chain and the name.
+# `require` with an `sslrootcert` checks the chain, as libpq does.
+
+# `url` takes the place of host, port, database, user, password and sslmode,
+# and refuses to be stated beside them. A JDBC URL copied from an
+# application's config works; its driver-only parameters are reported and
+# ignored.
+# [[connections]]
+# name = "staging"
+# url  = "jdbc:postgresql://staging.internal:5432/orders?user=svc&sslmode=require"
+
+# ── custom themes ─────────────────────────────────────────────
+# [[themes]]
+# name    = "midnight"          # may not shadow a built-in slug
+# extends = "default-dark"      # a built-in slug; a custom theme may not
+#                               # extend another custom theme
+
+# Any subset of the roles; what you leave out comes from `extends`.
+# [themes.colors]
+# base   = "#0b0d12"
+# focus  = "#7aa2f7"
+# danger = "#f7768e"
+#
+# The roles: base, text, dim, faint, border, focus, selection_bg,
+# crosshair, ranged, selection_fg, selection_bar, shortcut, schema, table,
+# primary_key, foreign_key, column, label, section, accent, match, success,
+# warning, danger, info, keyword, reference, literal, comment.

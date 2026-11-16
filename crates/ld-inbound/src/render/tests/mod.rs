@@ -1,0 +1,532 @@
+use crate::body::Marked;
+use ld_domain::commands::CommandsPanel;
+use ld_domain::connection::{Connection, ConnectionState, SchemaState};
+use ld_domain::contents::{SelectionMode, Subject, TableRef};
+use ld_domain::ddl::StructureTab;
+use ld_domain::feedback::Flash;
+use ld_domain::geometry::Geometry;
+use ld_domain::grid::{BAR, COLUMN_SPACING};
+use ld_domain::model::{
+    Catalog, Column, ConnId, Index, Key, Page, PrimaryKey, QueryId, Schema, Statement, Table, Value,
+};
+use ld_domain::overlay::{Message, Overlay};
+use ld_domain::panel::Panel;
+use ld_domain::pointer::{Click, Mark};
+use ld_domain::posture::Posture;
+use ld_domain::search::{Prompt, Search, Searched};
+use ld_domain::selection::{Range, Ranges, Selection};
+use ld_domain::style::Severity;
+use ld_domain::view::{Footer, PanelBody};
+use ld_domain::{Ported, ThemeChoice};
+use ld_domain::{State, view_model};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::{Buffer, Cell};
+use ratatui::layout::Position;
+use ratatui::style::{Color, Modifier};
+use std::collections::BTreeMap;
+
+use super::*;
+use crate::layout::QueriesHeight;
+
+mod bar;
+mod ddl;
+mod focus;
+mod footer;
+mod frame;
+mod grid;
+mod grid_scroll;
+mod hit_map;
+mod measure;
+mod palette;
+mod queries;
+mod scroll;
+mod search;
+mod tree;
+
+fn held(anchor: usize, cursor: usize) -> Selection {
+    let mut selection = Selection::default();
+    selection.start(anchor);
+    selection.stop(cursor);
+    selection
+}
+
+fn draw_focused(width: u16, height: u16, focus: Panel) -> Buffer {
+    let mut state = State::default();
+    state.focus_on(focus);
+    let mut terminal =
+        Terminal::new(TestBackend::new(width, height)).expect("TestBackend always initialises");
+
+    terminal
+        .draw(|frame| {
+            render(frame, &view_model(&state), Theme::default());
+        })
+        .expect("TestBackend always draws");
+
+    terminal.backend().buffer().clone()
+}
+
+fn draw(width: u16, height: u16) -> Buffer {
+    draw_focused(width, height, Panel::default())
+}
+
+fn row(buffer: &Buffer, y: u16) -> String {
+    (0..buffer.area.width)
+        .filter_map(|x| buffer.cell((x, y)))
+        .map(Cell::symbol)
+        .collect()
+}
+
+fn table(name: &str) -> Table {
+    Table {
+        name: name.to_owned(),
+        columns: vec![column("id", "uuid")],
+        primary_key: Some(PrimaryKey {
+            name: format!("{name}_pkey"),
+            columns: vec!["id".to_owned()],
+        }),
+        ..Table::default()
+    }
+}
+
+fn column(name: &str, data_type: &str) -> Column {
+    Column {
+        name: name.to_owned(),
+        data_type: data_type.to_owned(),
+        nullable: true,
+        default: None,
+        comment: None,
+    }
+}
+
+fn schema_of(names: &[&str]) -> Catalog {
+    tabled_schema(&names.iter().map(|n| (*n, &[][..])).collect::<Vec<_>>())
+}
+
+fn tabled_schema(schemas: &[(&str, &[&str])]) -> Catalog {
+    Catalog {
+        server: None,
+        schemas: schemas
+            .iter()
+            .map(|(name, tables)| {
+                let mut schema = Schema::empty(name);
+                schema.tables = tables
+                    .iter()
+                    .map(|t| ((*t).to_owned(), table(t)))
+                    .collect::<BTreeMap<_, _>>();
+                ((*name).to_owned(), schema)
+            })
+            .collect(),
+    }
+}
+
+/// Tables' body rows at 40x12.
+const TABLES_ROWS: usize = 3;
+
+fn browsing(names: &[&str], selected: usize) -> State {
+    let mut state = State::default();
+    state.connection = ConnectionState::Connected(Connection {
+        id: ConnId::next(),
+        name: ld_domain::config::ConnectionName::try_new("local").expect("a valid name"),
+        posture: Posture::ReadOnly,
+        schema: SchemaState::Loaded(schema_of(names)),
+    });
+    state.move_tree_cursor(selected);
+    // Cursor and viewport together, as `update` keeps them.
+    state.tables.scroll.follow(selected, TABLES_ROWS);
+    state
+}
+
+fn draw_state(width: u16, height: u16, state: &State) -> Buffer {
+    draw_state_with(width, height, state, Theme::default())
+}
+
+fn draw_state_with(width: u16, height: u16, state: &State, theme: Theme) -> Buffer {
+    let mut terminal =
+        Terminal::new(TestBackend::new(width, height)).expect("TestBackend always initialises");
+
+    terminal
+        .draw(|frame| {
+            render(frame, &view_model(state), theme);
+        })
+        .expect("TestBackend always draws");
+
+    terminal.backend().buffer().clone()
+}
+
+fn draw_view(width: u16, height: u16, view: &ViewModel) -> Buffer {
+    let mut terminal =
+        Terminal::new(TestBackend::new(width, height)).expect("TestBackend always initialises");
+
+    terminal
+        .draw(|frame| {
+            render(frame, view, Theme::default());
+        })
+        .expect("TestBackend always draws");
+
+    terminal.backend().buffer().clone()
+}
+
+fn banded(buffer: &Buffer, row: u16) -> bool {
+    let band = Theme::default()
+        .style(Token::Ranged)
+        .bg
+        .expect("a ranged row spends a background");
+
+    buffer.cell((1, 1 + row)).expect("inside the panel").bg == band
+}
+
+/// Primary key `id`.
+fn showing(page: Page) -> State {
+    let mut state = State::default();
+    state.connection = ConnectionState::Connected(Connection {
+        id: ConnId::next(),
+        name: ld_domain::config::ConnectionName::try_new("local").expect("a valid name"),
+        posture: Posture::ReadOnly,
+        schema: SchemaState::Loaded(tabled_schema(&[("shop", &["orders"])])),
+    });
+    state.focus_on(Panel::Contents);
+    let query = QueryId::next();
+    state.contents.requested(
+        query,
+        Subject::Table(TableRef::new("shop", "orders")),
+        ld_domain::model::Statement::select_all("shop", "orders", &[]),
+    );
+    state.contents.page_ready(
+        query,
+        page,
+        ld_domain::config::MaxColumnWidth::default(),
+        QueryId::next,
+    );
+    state
+}
+
+fn page_of(columns: &[&str], rows: &[&[Value]]) -> Page {
+    Page {
+        columns: columns.iter().map(|name| (*name).to_owned()).collect(),
+        rows: rows
+            .iter()
+            .map(|values| ld_domain::model::Row {
+                values: values.to_vec(),
+            })
+            .collect(),
+        next: None,
+    }
+}
+
+fn text(value: &str) -> Value {
+    Value::Text(value.to_owned())
+}
+
+/// Sets the cursor and its viewport together, as `update` does.
+fn select_contents(state: &mut State, index: usize, height: usize) {
+    let len = state.contents.row_count();
+    state.contents.cursor.go_to(index, len);
+    state.contents.scroll.follow(index, height);
+}
+
+fn sized_page(columns: usize, rows: usize) -> Page {
+    Page {
+        columns: (0..columns).map(|index| format!("c{index}")).collect(),
+        rows: (0..rows)
+            .map(|row| ld_domain::model::Row {
+                values: (0..columns).map(|_| text(&format!("v{row}"))).collect(),
+            })
+            .collect(),
+        next: None,
+    }
+}
+
+/// Twelve two-wide columns in a 22-column body: six fit, so later ones need
+/// scrolling.
+fn showing_column_path(path: &[usize]) -> State {
+    walked(22, path)
+}
+
+/// `inner` must match the frame it is drawn in.
+fn walked(inner: u16, path: &[usize]) -> State {
+    let page = sized_page(12, 3);
+    let widths = ld_domain::grid::widths(&page, ld_domain::config::MaxColumnWidth::default());
+    let mut state = showing(page);
+    state.contents.mode = SelectionMode::Cell;
+    let available = ld_domain::grid::available(inner, 1);
+
+    for column in path {
+        state.contents.column.go_to(*column, widths.len());
+        state
+            .contents
+            .column_scroll
+            .follow(*column, &widths, available);
+    }
+
+    state
+}
+
+/// Below the border, the heading and its rule.
+const fn grid_row_y(area: Rect, row: u16) -> u16 {
+    area.y + 1 + crate::body::HEADER_ROWS + row
+}
+
+/// Past the border, the bar-and-gutter block and its spacing.
+const fn first_cell(area: Rect, gutter: u16) -> u16 {
+    area.x + 1 + BAR + gutter + COLUMN_SPACING
+}
+
+const fn nth_cell(area: Rect, gutter: u16, width: u16, index: u16) -> u16 {
+    first_cell(area, gutter) + index * (width + COLUMN_SPACING)
+}
+
+/// Heading marks set the width of `sized_page`'s columns.
+const fn drawn_column(area: Rect, index: u16) -> u16 {
+    nth_cell(area, 1, 2 + ld_domain::grid::MARKS, index)
+}
+
+fn orders() -> Table {
+    Table {
+        name: "orders_by_customer".to_owned(),
+        columns: vec![
+            column("customer_id", "uuid"),
+            column("order_date", "date"),
+            column("order_id", "bigint"),
+        ],
+        primary_key: Some(PrimaryKey {
+            name: "orders_by_customer_pkey".to_owned(),
+            columns: ["customer_id", "order_date", "order_id"]
+                .map(str::to_owned)
+                .to_vec(),
+        }),
+        foreign_keys: vec![ld_domain::model::ForeignKey {
+            name: "orders_customer_id_fkey".to_owned(),
+            columns: vec!["customer_id".to_owned()],
+            target: ld_domain::model::RelationRef {
+                schema: "shop".to_owned(),
+                table: "customers".to_owned(),
+            },
+            target_columns: vec!["id".to_owned()],
+            on_update: "NO ACTION".to_owned(),
+            on_delete: "NO ACTION".to_owned(),
+        }],
+        constraints: vec![ld_domain::model::Constraint {
+            name: "recent".to_owned(),
+            kind: ld_domain::model::ConstraintKind::Check,
+            definition: "CHECK (order_date > '2020-01-01')".to_owned(),
+        }],
+        comment: Some("Order list.".to_owned()),
+        ..Table::default()
+    }
+}
+
+fn describing(table: Table) -> State {
+    let schema = Catalog {
+        server: None,
+        schemas: BTreeMap::from([(
+            "shop".to_owned(),
+            Schema {
+                tables: BTreeMap::from([(table.name.clone(), table)]),
+                ..Schema::empty("shop")
+            },
+        )]),
+    };
+    let mut state = State::default();
+    state.connection = ConnectionState::Connected(Connection {
+        id: ConnId::next(),
+        name: ld_domain::config::ConnectionName::try_new("local").expect("a valid name"),
+        posture: Posture::ReadOnly,
+        schema: SchemaState::Loaded(schema.clone()),
+    });
+    state.tables.open(&schema);
+    state.tables.open(&schema);
+    state
+}
+
+/// At 104x41; the body opens on the next row.
+const DDL_BORDER: u16 = 16;
+const DDL_BODY: u16 = DDL_BORDER + 1;
+const DDL_END: u16 = 39;
+
+/// Twenty-two rows of 23 columns at 104x41, bar column included.
+fn ddl_rows(buffer: &Buffer) -> Vec<String> {
+    (DDL_BODY..DDL_END)
+        .map(|y| {
+            (1..25)
+                .filter_map(|x| buffer.cell((x, y)))
+                .map(Cell::symbol)
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
+}
+
+fn listing(table: Table) -> State {
+    let mut state = describing(table);
+    state.ddl.show(StructureTab::Columns);
+    state
+}
+
+fn keyed(table: Table) -> State {
+    let mut state = describing(table);
+    state.ddl.show(StructureTab::Keys);
+    state
+}
+
+fn ddl_details(state: &State) -> ld_domain::view::Details {
+    let PanelBody::Details { details, .. } = view_model(state).panels[1].body.clone() else {
+        panic!("a selected row has something to describe");
+    };
+    details
+}
+
+fn geometry_of(width: u16, height: u16, state: &State) -> Geometry {
+    let mut terminal =
+        Terminal::new(TestBackend::new(width, height)).expect("TestBackend always initialises");
+    let mut geometry = Geometry::default();
+
+    terminal
+        .draw(|frame| {
+            geometry = render(frame, &view_model(state), Theme::default()).geometry;
+        })
+        .expect("TestBackend always draws");
+
+    geometry
+}
+
+fn draw_mapped(width: u16, height: u16, state: &State) -> (Buffer, FrameMap) {
+    let mut terminal =
+        Terminal::new(TestBackend::new(width, height)).expect("TestBackend always initialises");
+    let mut map = FrameMap::default();
+
+    terminal
+        .draw(|frame| {
+            map = render(frame, &view_model(state), Theme::default()).map;
+        })
+        .expect("TestBackend always draws");
+
+    (terminal.backend().buffer().clone(), map)
+}
+
+fn drawn_with_cursor(
+    width: u16,
+    height: u16,
+    state: &State,
+) -> (Buffer, Option<ratatui::layout::Position>) {
+    let mut terminal =
+        Terminal::new(TestBackend::new(width, height)).expect("TestBackend always initialises");
+
+    terminal
+        .draw(|frame| {
+            render(frame, &view_model(state), Theme::default());
+        })
+        .expect("TestBackend always draws");
+
+    let backend = terminal.backend();
+    let cursor = backend.cursor_visible().then(|| backend.cursor_position());
+
+    (backend.buffer().clone(), cursor)
+}
+
+/// Field by field: a `Cell` cannot tell an unset colour from the terminal
+/// default.
+fn style_of_first(buffer: &Buffer, needle: &str) -> (Color, Color, Modifier) {
+    for y in 0..buffer.area.height {
+        let text = row(buffer, y);
+        if let Some(byte_at) = text.find(needle) {
+            // Border glyphs are multi-byte but one column each.
+            let column = text[..byte_at].chars().count();
+            let x = u16::try_from(column).expect("a drawn row's width fits u16");
+            let cell = buffer.cell((x, y)).expect("a found position is in bounds");
+            return (cell.fg, cell.bg, cell.modifier);
+        }
+    }
+    panic!("{needle:?} was not drawn");
+}
+
+fn with_palette(width: u16, height: u16) -> Buffer {
+    let mut state = State::default();
+    state.overlay = Some(Overlay::Commands(CommandsPanel::opened()));
+    let mut terminal =
+        Terminal::new(TestBackend::new(width, height)).expect("TestBackend always initialises");
+
+    terminal
+        .draw(|frame| {
+            render(frame, &view_model(&state), Theme::default());
+        })
+        .expect("TestBackend always draws");
+
+    terminal.backend().buffer().clone()
+}
+
+/// Stops at the block's own right corner: panels sit side by side.
+fn top_border(buffer: &Buffer, expect: &str) -> (u16, u16) {
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            if buffer.cell((x, y)).is_some_and(|cell| cell.symbol() == "╭") {
+                let mut row = String::new();
+                for at in x..buffer.area.width {
+                    let Some(cell) = buffer.cell((at, y)) else {
+                        break;
+                    };
+                    row.push_str(cell.symbol());
+                    if cell.symbol() == "╮" {
+                        break;
+                    }
+                }
+                if row.contains(expect) {
+                    return (x, y);
+                }
+            }
+        }
+    }
+    panic!("no block titled {expect:?} was drawn");
+}
+
+fn block_width(buffer: &Buffer, expect: &str) -> u16 {
+    let (x, y) = top_border(buffer, expect);
+    (x + 1..buffer.area.width)
+        .find(|at| {
+            buffer
+                .cell((*at, y))
+                .is_some_and(|cell| cell.symbol() == "╮")
+        })
+        .expect("a bordered block has a right corner")
+        - x
+        + 1
+}
+
+fn block_area(buffer: &Buffer, title: &str) -> Rect {
+    let (x, y) = top_border(buffer, title);
+    let bottom = (y + 1..buffer.area.height)
+        .find(|at| {
+            buffer
+                .cell((x, *at))
+                .is_some_and(|cell| cell.symbol() == "╰")
+        })
+        .expect("a bordered block has a bottom edge");
+
+    Rect::new(x, y, block_width(buffer, title), bottom - y + 1)
+}
+
+/// Unlike [`row_text`], relative to the block.
+fn block_row(buffer: &Buffer, title: &str, line: u16) -> String {
+    let area = block_area(buffer, title);
+
+    (area.x + 1..area.right() - 1)
+        .filter_map(|x| buffer.cell((x, area.y + 1 + line)))
+        .map(Cell::symbol)
+        .collect()
+}
+
+fn footer(rows: &str, size: Option<(&str, Token)>, status: Option<&str>) -> Footer {
+    let (status, hint) = status.map_or((None, None), |status| match status.split_once(" — ") {
+        Some((status, hint)) => (Some(status.to_owned()), Some(hint.to_owned())),
+        None => (Some(status.to_owned()), None),
+    });
+
+    Footer {
+        rows: rows.to_owned(),
+        size: size.map(|(text, token)| ld_domain::style::Segment::styled(text, token)),
+        dirty: None,
+        status,
+        hint,
+    }
+}

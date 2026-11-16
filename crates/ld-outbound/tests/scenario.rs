@@ -1,0 +1,779 @@
+//! Whole sessions driven through the in-memory cluster: no clock, no socket.
+
+use ld_domain::clock::Stamp;
+use ld_domain::config::{PageRows, PageSize};
+use ld_domain::log::Outcome;
+use ld_domain::model::{
+    Column, DbError, Index, Key, KeyPress, Page, PagingState, RelationKind, Row, Statement, Value,
+};
+use ld_domain::panel::Panel;
+use ld_domain::posture::Posture;
+use ld_domain::style::Token;
+use ld_domain::view::{DetailRow, Details, Limb, OverlayView, PanelBody, RowKind, Section};
+use ld_domain::{Effect, Msg, State, init, update, view_model};
+use ld_outbound::fake::FakeCluster;
+
+mod support;
+use support::{press, run, schema_of, tabled_schema_of};
+
+#[tokio::test]
+async fn connecting_and_describing_fills_the_tables_panel() {
+    let cluster = FakeCluster::new(
+        schema_of(&["pg_catalog", "typezoo", "shop"]),
+        Posture::ReadOnly,
+    );
+    let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
+
+    run(&cluster, &mut state, effects).await;
+
+    let PanelBody::Tree { rows, selected, .. } = &view_model(&state).panels[0].body else {
+        panic!("a described server lists its schemas");
+    };
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        ["shop", "typezoo", "pg_catalog"]
+    );
+    assert_eq!(
+        rows[0].kind,
+        RowKind::Schema { limb: None },
+        "these fixtures have no tables to hang off a namespace"
+    );
+    assert_eq!(*selected, 0);
+}
+
+#[tokio::test]
+async fn a_cluster_that_cannot_be_reached_raises_a_fatal_modal() {
+    let cluster = FakeCluster::failing(DbError::Unreachable("no route to host".to_owned()));
+    let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
+
+    run(&cluster, &mut state, effects).await;
+
+    let Some(OverlayView::Fatal(overlay)) = view_model(&state).overlay else {
+        panic!("the failure ends the process rather than starting a half-connected app");
+    };
+    assert!(overlay.message.contains("no route to host"));
+    assert!(
+        matches!(&view_model(&state).panels[0].body, PanelBody::Notice { text, token } if !text.contains("no route to host") && *token == Some(Token::Muted)),
+        "the modal owns the failure; the panel behind it is back to being about schemas"
+    );
+}
+
+#[tokio::test]
+async fn a_cluster_that_connects_but_cannot_be_described_raises_a_fatal_modal() {
+    let cluster = FakeCluster::failing_to_describe(DbError::Invalid("unauthorized".to_owned()));
+    let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
+
+    run(&cluster, &mut state, effects).await;
+
+    let Some(OverlayView::Fatal(overlay)) = view_model(&state).overlay else {
+        panic!("the failure ends the process rather than starting a half-connected app");
+    };
+    assert_eq!(overlay.title, "Catalog unavailable");
+}
+
+#[tokio::test]
+async fn pressing_l_unfolds_a_namespace_and_the_view_model_shows_its_tables() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders", "users"])]),
+        Posture::ReadOnly,
+    );
+    let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
+    run(&cluster, &mut state, effects).await;
+
+    let effects = update(&mut state, Msg::Input(KeyPress::new(Key::Char('l'))));
+    assert!(
+        effects.is_empty(),
+        "unfolding is a pure state change and must emit no effect"
+    );
+
+    let PanelBody::Tree { rows, selected, .. } = &view_model(&state).panels[0].body else {
+        panic!("a described server with tables lists a tree");
+    };
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.kind, row.label.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (RowKind::Schema { limb: None }, "shop"),
+            (
+                RowKind::Table {
+                    limb: Limb::Middle,
+                    outer: None,
+                    relation: RelationKind::Table
+                },
+                "orders"
+            ),
+            (
+                RowKind::Table {
+                    limb: Limb::Last,
+                    outer: None,
+                    relation: RelationKind::Table
+                },
+                "users"
+            ),
+        ]
+    );
+    assert_eq!(*selected, 0);
+}
+
+#[tokio::test]
+async fn pressing_h_from_a_table_lands_on_its_parent_namespace() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders", "users"])]),
+        Posture::ReadOnly,
+    );
+    let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
+    run(&cluster, &mut state, effects).await;
+
+    update(&mut state, Msg::Input(KeyPress::new(Key::Char('l'))));
+    update(&mut state, Msg::Input(KeyPress::new(Key::Char('l'))));
+
+    let PanelBody::Tree { selected, .. } = &view_model(&state).panels[0].body else {
+        panic!("a described server with tables lists a tree");
+    };
+    assert_eq!(*selected, 1, "the second l steps into the first table");
+
+    let effects = update(&mut state, Msg::Input(KeyPress::new(Key::Char('h'))));
+    assert!(
+        effects.is_empty(),
+        "stepping out to the parent is a pure state change and must emit no effect"
+    );
+
+    let PanelBody::Tree { rows, selected, .. } = &view_model(&state).panels[0].body else {
+        panic!("a described server with tables lists a tree");
+    };
+    assert_eq!(*selected, 0);
+    assert!(
+        rows.iter().any(|row| row.kind.is_table()),
+        "stepping out must not fold the namespace"
+    );
+}
+
+/// Primary key `id` and a regular column.
+fn customers() -> Page {
+    Page {
+        columns: vec!["id".to_owned(), "email".to_owned()],
+        rows: vec![
+            Row {
+                values: vec![
+                    Value::Uuid("8f14e45f".to_owned()),
+                    Value::Text("ada@example.com".to_owned()),
+                ],
+            },
+            Row {
+                values: vec![Value::Uuid("c9f0f895".to_owned()), Value::Null],
+            },
+        ],
+        next: None,
+    }
+}
+
+async fn on_a_table(cluster: &FakeCluster) -> State {
+    let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
+    run(cluster, &mut state, effects).await;
+
+    let effects = press(&mut state, Key::Char('l'));
+    run(cluster, &mut state, effects).await;
+    let effects = press(&mut state, Key::Char('l'));
+    run(cluster, &mut state, effects).await;
+
+    state
+}
+
+#[tokio::test]
+async fn pressing_enter_on_a_table_fills_the_contents_panel() {
+    let mut schema = tabled_schema_of(&[("shop", &["orders"])]);
+    schema
+        .schemas
+        .get_mut("shop")
+        .and_then(|namespace| namespace.tables.get_mut("orders"))
+        .expect("the fixture made it")
+        .columns = vec![Column {
+        name: "email".to_owned(),
+        data_type: "text".to_owned(),
+        nullable: true,
+        default: None,
+        comment: None,
+    }];
+    let cluster = FakeCluster::new(schema, Posture::ReadOnly).returning(customers());
+    let mut state = on_a_table(&cluster).await;
+
+    let effects = press(&mut state, Key::Enter);
+    run(&cluster, &mut state, effects).await;
+
+    assert_eq!(
+        cluster.executed(),
+        vec![Statement::select_all("shop", "orders", &["id".to_owned()])],
+        "the panel reads exactly the statement it shows"
+    );
+
+    let view = view_model(&state);
+    assert_eq!(
+        view.panels[2].title.text(),
+        "[3]-Table contents — shop.orders (2 rows)"
+    );
+
+    let PanelBody::Grid {
+        columns,
+        rows,
+        selected,
+        ..
+    } = &view.panels[2].body
+    else {
+        panic!("a table that was read draws a grid");
+    };
+    assert_eq!(
+        columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.token))
+            .collect::<Vec<_>>(),
+        [
+            ("id", Some(Token::PrimaryKey)),
+            ("email", Some(Token::RegularColumn)),
+        ]
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        [["8f14e45f", "ada@example.com"], ["c9f0f895", "null"]]
+    );
+    assert_eq!(rows[1][1].token, Some(Token::Faint), "the null is faint");
+    assert_eq!(*selected, 0);
+}
+
+#[tokio::test]
+async fn a_table_that_cannot_be_read_quotes_the_error_in_the_panel() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders"])]),
+        Posture::ReadOnly,
+    )
+    .refusing_to_execute(DbError::Invalid("unauthorized".to_owned()));
+    let mut state = on_a_table(&cluster).await;
+
+    let effects = press(&mut state, Key::Enter);
+    run(&cluster, &mut state, effects).await;
+
+    let view = view_model(&state);
+    assert!(
+        matches!(&view.panels[2].body, PanelBody::Notice { text, .. }
+            if text.contains("unauthorized")),
+        "the panel says why, without a trip to the trail"
+    );
+    assert!(
+        view.overlay.is_none(),
+        "one panel failing must not interrupt the whole application"
+    );
+}
+
+#[tokio::test]
+async fn reading_a_table_lands_focus_in_contents_and_j_walks_the_grid_rather_than_the_tree() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders"])]),
+        Posture::ReadOnly,
+    )
+    .returning(customers());
+    let mut state = on_a_table(&cluster).await;
+    let effects = press(&mut state, Key::Enter);
+    run(&cluster, &mut state, effects).await;
+
+    let PanelBody::Tree { selected, .. } = &view_model(&state).panels[0].body else {
+        panic!("the tree is still showing");
+    };
+    let tree_row = *selected;
+
+    // Enter already took focus to Contents.
+    press(&mut state, Key::Char('j'));
+
+    let view = view_model(&state);
+    let PanelBody::Grid { selected, .. } = &view.panels[2].body else {
+        panic!("a table that was read draws a grid");
+    };
+    assert_eq!(*selected, 1, "j moved the grid");
+
+    let PanelBody::Tree { selected, .. } = &view.panels[0].body else {
+        panic!("the tree is still showing");
+    };
+    assert_eq!(*selected, tree_row, "and left the tree where it was");
+}
+
+#[tokio::test]
+async fn reading_a_second_table_cancels_the_first_and_drops_its_late_page() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders", "users"])]),
+        Posture::ReadOnly,
+    )
+    .returning(customers());
+    let mut state = on_a_table(&cluster).await;
+
+    // Not run yet: the first read must still be outstanding when the second is
+    // issued.
+    let first = press(&mut state, Key::Enter);
+    state.focus_on(Panel::Objects);
+    press(&mut state, Key::Char('j'));
+    let second = press(&mut state, Key::Enter);
+
+    assert!(
+        second
+            .iter()
+            .any(|effect| matches!(effect, Effect::Cancel(_))),
+        "the superseded read is cancelled"
+    );
+
+    // The cancelled read answers anyway, as a slow coordinator would.
+    run(&cluster, &mut state, first).await;
+    run(&cluster, &mut state, second).await;
+
+    assert_eq!(
+        cluster.executed(),
+        vec![
+            Statement::select_all("shop", "orders", &["id".to_owned()]),
+            Statement::select_all("shop", "users", &["id".to_owned()]),
+        ]
+    );
+    assert_eq!(
+        view_model(&state).panels[2].title.text(),
+        "[3]-Table contents — shop.users (2 rows)",
+        "a late page for a read the user left must not resurrect it"
+    );
+}
+
+fn named(details: &Details) -> Vec<(&'static str, &str)> {
+    details
+        .rows()
+        .filter_map(|row| match row {
+            DetailRow::Identity { kind, name } => Some((kind.label(), name.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn headings(details: &Details) -> Vec<&str> {
+    details
+        .sections
+        .iter()
+        .filter_map(|section| {
+            section
+                .heading
+                .as_ref()
+                .map(|heading| heading.text.as_str())
+        })
+        .collect()
+}
+
+fn section<'a>(details: &'a Details, heading: &str) -> &'a Section {
+    details
+        .sections
+        .iter()
+        .find(|section| {
+            section
+                .heading
+                .as_ref()
+                .is_some_and(|own| own.text == heading)
+        })
+        .unwrap_or_else(|| panic!("{heading} is missing"))
+}
+
+fn ddl_details(state: &State) -> Details {
+    let PanelBody::Details { details, .. } = &view_model(state).panels[1].body else {
+        panic!("a selected row has something to describe");
+    };
+    details.clone()
+}
+
+#[tokio::test]
+async fn walking_the_ddl_strip_reaches_the_indexes_of_the_selected_table() {
+    let mut schema = tabled_schema_of(&[("shop", &["orders"])]);
+    schema
+        .schemas
+        .get_mut("shop")
+        .and_then(|namespace| namespace.tables.get_mut("orders"))
+        .expect("the fixture has shop.orders")
+        .indexes = vec![Index {
+        name: "orders_by_id".to_owned(),
+        definition: "CREATE INDEX orders_by_id ON shop.orders USING btree (id)".to_owned(),
+        keys: vec!["id".to_owned()],
+        unique: false,
+        primary: false,
+        method: "btree".to_owned(),
+        predicate: None,
+    }];
+
+    let cluster = FakeCluster::new(schema, Posture::ReadOnly);
+    let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
+    run(&cluster, &mut state, effects).await;
+
+    press(&mut state, Key::Char('l'));
+    press(&mut state, Key::Char('l'));
+    press(&mut state, Key::Char('2'));
+    press(&mut state, Key::Char(']'));
+    press(&mut state, Key::Char(']'));
+
+    let indexes = ddl_details(&state);
+    assert_eq!(
+        headings(&indexes),
+        ["Primary Key", "orders_by_id"],
+        "the key leads, and the index the server reported follows it"
+    );
+    assert_eq!(
+        section(&indexes, "orders_by_id").rows,
+        [
+            DetailRow::KeyColumn {
+                name: "id".to_owned(),
+                data_type: "uuid".to_owned(),
+            },
+            DetailRow::Property {
+                name: "using".to_owned(),
+                value: "btree".to_owned(),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn stepping_onto_a_table_describes_it_in_the_ddl_panel() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders", "users"])]),
+        Posture::ReadOnly,
+    );
+    let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
+    run(&cluster, &mut state, effects).await;
+
+    let namespace = ddl_details(&state);
+    assert_eq!(named(&namespace), [("Schema", "shop")]);
+    assert_eq!(headings(&namespace), ["Contents"]);
+
+    update(&mut state, Msg::Input(KeyPress::new(Key::Char('l'))));
+    let effects = update(&mut state, Msg::Input(KeyPress::new(Key::Char('l'))));
+    assert!(
+        effects.is_empty(),
+        "the whole schema arrived with describe, so describing a table is not I/O"
+    );
+
+    let table = ddl_details(&state);
+    assert_eq!(
+        named(&table),
+        [("Schema", "shop"), ("Table", "orders")],
+        "the panel names what it describes in rows of its own"
+    );
+    assert_eq!(
+        headings(&table),
+        ["1 column", "About"],
+        "the panel opens on the columns, the table's comment beneath them"
+    );
+    assert_eq!(
+        section(&table, "About").rows,
+        [DetailRow::Property {
+            name: "comment".to_owned(),
+            value: "The orders table.".to_owned(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn a_session_leaves_a_trail_of_everything_it_ran() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders"])]),
+        Posture::ReadOnly,
+    );
+    let mut state = on_a_table(&cluster).await;
+
+    let effects = press(&mut state, Key::Enter);
+    run(&cluster, &mut state, effects).await;
+
+    let texts: Vec<String> = state
+        .log
+        .entries()
+        .map(|entry| entry.subject().text())
+        .collect();
+
+    assert!(texts[0].starts_with("Connecting"), "{texts:?}");
+    assert!(texts[1].starts_with("Reading schema"), "{texts:?}");
+    assert!(
+        texts[2].starts_with("SELECT * FROM"),
+        "a table open logs the statement it issued: {texts:?}"
+    );
+    assert!(
+        state
+            .log
+            .entries()
+            .all(|entry| !matches!(entry.outcome(), Outcome::Pending { .. })),
+        "every entry was closed out: {texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn dropping_a_table_removes_it_from_the_tree() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders", "users"])]),
+        Posture::Writable,
+    )
+    .re_describing(tabled_schema_of(&[("shop", &["users"])]));
+    let mut state = on_a_table(&cluster).await;
+    // Stands in for a rendered frame's report.
+    state.geometry = state.geometry.with_drop_fits(true);
+
+    let effects = press(&mut state, Key::Char('d'));
+    run(&cluster, &mut state, effects).await;
+    let effects = press(&mut state, Key::Char('y'));
+    run(&cluster, &mut state, effects).await;
+
+    assert_eq!(
+        cluster
+            .executed()
+            .iter()
+            .map(|stmt| stmt.sql.as_str())
+            .collect::<Vec<_>>(),
+        ["DROP TABLE \"shop\".\"orders\""],
+        "the statement the confirmation named is the statement that ran"
+    );
+
+    let PanelBody::Tree { rows, .. } = &view_model(&state).panels[0].body else {
+        panic!("the tree is still a tree");
+    };
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        ["shop", "users"],
+        "the re-read schema is what the tree draws"
+    );
+}
+
+#[tokio::test]
+async fn a_read_only_connection_drops_nothing() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders"])]),
+        Posture::ReadOnly,
+    );
+    let mut state = on_a_table(&cluster).await;
+    state.geometry = state.geometry.with_drop_fits(true);
+
+    let effects = press(&mut state, Key::Char('d'));
+    run(&cluster, &mut state, effects).await;
+
+    assert!(
+        matches!(
+            view_model(&state).overlay,
+            Some(OverlayView::Message(message)) if message.title == "Read-only connection"
+        ),
+        "the posture refuses the drop, and says so rather than swallowing the key"
+    );
+    assert!(cluster.executed().is_empty());
+}
+
+#[tokio::test]
+async fn dropping_a_namespace_takes_its_name_typed_back() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders"]), ("billing", &[])]),
+        Posture::Writable,
+    )
+    .re_describing(tabled_schema_of(&[("shop", &["orders"])]));
+    let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
+    run(&cluster, &mut state, effects).await;
+    state.geometry = state.geometry.with_drop_fits(true);
+
+    let effects = press(&mut state, Key::Char('d'));
+    run(&cluster, &mut state, effects).await;
+
+    let effects = press(&mut state, Key::Enter);
+    run(&cluster, &mut state, effects).await;
+    assert!(
+        cluster.executed().is_empty(),
+        "an empty field drops nothing"
+    );
+
+    for character in "billing".chars() {
+        let effects = press(&mut state, Key::Char(character));
+        run(&cluster, &mut state, effects).await;
+    }
+    let effects = press(&mut state, Key::Enter);
+    run(&cluster, &mut state, effects).await;
+
+    assert_eq!(
+        cluster
+            .executed()
+            .iter()
+            .map(|stmt| stmt.sql.as_str())
+            .collect::<Vec<_>>(),
+        ["DROP SCHEMA \"billing\""]
+    );
+
+    let PanelBody::Tree { rows, .. } = &view_model(&state).panels[0].body else {
+        panic!("the tree is still a tree");
+    };
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        ["shop"],
+        "the tree draws the schemas the re-read schema still has"
+    );
+}
+
+#[tokio::test]
+async fn deleting_the_selected_rows_re_reads_the_grid() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders"])]),
+        Posture::Writable,
+    )
+    .returning(keyed_rows(3));
+    let mut state = on_a_table(&cluster).await;
+    state.geometry = state.geometry.with_drop_fits(true);
+
+    let effects = press(&mut state, Key::Enter);
+    run(&cluster, &mut state, effects).await;
+
+    // Two rows held, from the cursor down.
+    let effects = press(&mut state, Key::Char('v'));
+    run(&cluster, &mut state, effects).await;
+    let effects = press(&mut state, Key::Char('j'));
+    run(&cluster, &mut state, effects).await;
+
+    let effects = press(&mut state, Key::Char('d'));
+    run(&cluster, &mut state, effects).await;
+
+    let Some(OverlayView::Drop(view)) = view_model(&state).overlay else {
+        panic!("the confirmation is up");
+    };
+    assert_eq!(view.rows, Some(2), "the block counts what it would delete");
+    assert!(
+        ld_domain::style::text(&view.title).contains("Delete 2 rows from shop.orders"),
+        "{:?}",
+        view.title
+    );
+
+    let effects = press(&mut state, Key::Char('y'));
+    run(&cluster, &mut state, effects).await;
+
+    let ran: Vec<String> = cluster
+        .executed()
+        .iter()
+        .map(|stmt| stmt.sql.clone())
+        .collect();
+    assert_eq!(
+        ran.len(),
+        3,
+        "the read, the batch, and the re-read: {ran:?}"
+    );
+    assert!(ran[1].starts_with("BEGIN;"), "{}", ran[1]);
+    assert_eq!(ran[1].matches("DELETE FROM").count(), 2, "{}", ran[1]);
+    assert_eq!(
+        ran[2], "SELECT * FROM shop.orders ORDER BY id",
+        "the grid is re-read so it stops drawing rows that are gone"
+    );
+}
+
+#[tokio::test]
+async fn a_page_without_the_whole_primary_key_deletes_nothing() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders"])]),
+        Posture::Writable,
+    )
+    .returning(Page {
+        columns: vec!["email".to_owned()],
+        rows: vec![Row {
+            values: vec![Value::Text("ada@example.com".to_owned())],
+        }],
+        next: None,
+    });
+    let mut state = on_a_table(&cluster).await;
+    state.geometry = state.geometry.with_drop_fits(true);
+
+    let effects = press(&mut state, Key::Enter);
+    run(&cluster, &mut state, effects).await;
+    let before = cluster.executed().len();
+
+    let effects = press(&mut state, Key::Char('d'));
+    run(&cluster, &mut state, effects).await;
+
+    assert!(view_model(&state).overlay.is_none());
+    assert_eq!(cluster.executed().len(), before);
+}
+
+/// Fixture key `(id uuid, created_at timestamp)`.
+fn keyed_rows(count: usize) -> Page {
+    Page {
+        columns: vec!["id".to_owned(), "created_at".to_owned(), "email".to_owned()],
+        rows: (0..count)
+            .map(|index| Row {
+                values: vec![
+                    Value::Uuid(format!("8f14e45f-000{index}")),
+                    Value::Text("2023-11-14T22:13:20.000Z".to_owned()),
+                    Value::Text("ada@example.com".to_owned()),
+                ],
+            })
+            .collect(),
+        next: None,
+    }
+}
+
+fn customers_page(index: u8) -> Page {
+    Page {
+        next: (index < 2).then(|| PagingState(vec![index + 1])),
+        ..customers()
+    }
+}
+
+#[tokio::test]
+async fn a_read_pages_through_p_and_then_shift_p_to_the_end() {
+    let cluster = FakeCluster::new(
+        tabled_schema_of(&[("shop", &["orders"])]),
+        Posture::ReadOnly,
+    )
+    .paging((0..3).map(customers_page).collect());
+    let mut state = on_a_table(&cluster).await;
+
+    let effects = press(&mut state, Key::Enter);
+    run(&cluster, &mut state, effects).await;
+    assert_eq!(state.contents.row_count(), 2);
+    assert!(state.contents.has_more());
+
+    let effects = press(&mut state, Key::Char('p'));
+    run(&cluster, &mut state, effects).await;
+    assert_eq!(state.contents.row_count(), 4);
+    assert!(state.contents.can_fetch(), "one page, and no further");
+    let footer = view_model(&state).panels[2]
+        .footer
+        .clone()
+        .expect("a footer");
+    assert_eq!(
+        (footer.rows.as_str(), footer.status.as_deref()),
+        ("4 rows", Some("more"))
+    );
+
+    let effects = press(&mut state, Key::Char('P'));
+    run(&cluster, &mut state, effects).await;
+    assert_eq!(state.contents.row_count(), 6);
+    assert!(!state.contents.has_more());
+    let footer = view_model(&state).panels[2]
+        .footer
+        .clone()
+        .expect("a footer");
+    assert_eq!((footer.rows.as_str(), footer.status), ("6 rows", None));
+
+    assert_eq!(
+        cluster.executed(),
+        vec![Statement::select_all("shop", "orders", &["id".to_owned()]); 3],
+        "every page continues the one statement"
+    );
+    assert_eq!(
+        cluster.page_sizes(),
+        vec![PageSize::from(PageRows::default()); 3],
+        "each page is grid.page_rows long"
+    );
+    assert_eq!(
+        state
+            .log
+            .entries()
+            .filter(|entry| entry.subject().text().starts_with("SELECT"))
+            .count(),
+        1,
+        "the trail keeps the one entry the read made"
+    );
+}

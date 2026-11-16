@@ -1,0 +1,685 @@
+//! Rows as CSV lines. One encoder, so the panels differ only in what their
+//! fields are.
+
+use crate::cell;
+use crate::create::ident;
+use crate::log::Entry;
+use crate::model::{ColumnDefault, Row, Table, Value};
+use crate::selection::Ranges;
+use crate::tree::Node;
+use crate::view::logs::outcome_text;
+use crate::view::{ColumnKind, DetailRow};
+
+/// No trailing newline: a paste into a shell must not submit itself.
+#[must_use]
+pub(crate) fn line(fields: &[String]) -> String {
+    fields
+        .iter()
+        .map(|field| escaped(field.as_str()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Every column, untruncated: the drawn grid is a window.
+#[must_use]
+pub fn grid_row(row: &Row) -> String {
+    let fields: Vec<String> = row.values.iter().map(value).collect();
+
+    line(&fields)
+}
+
+/// One `INSERT` per row, a paste that recreates them. A generated column is
+/// left out, as Postgres refuses a value for it; an `ALWAYS` identity keeps
+/// its value through `OVERRIDING SYSTEM VALUE`. `None` where no column of the
+/// page is the table's to write.
+#[must_use]
+pub fn inserts(namespace: &str, table: &Table, columns: &[String], rows: &[Row]) -> Option<String> {
+    let written: Vec<(usize, &crate::model::Column)> = columns
+        .iter()
+        .enumerate()
+        .filter_map(|(at, name)| Some((at, table.column(name)?)))
+        .filter(|(_, column)| !matches!(column.default, Some(ColumnDefault::Generated(_))))
+        .collect();
+    if written.is_empty() {
+        return None;
+    }
+
+    let overriding = written.iter().any(|(_, column)| {
+        matches!(
+            column.default,
+            Some(ColumnDefault::Identity { always: true })
+        )
+    });
+    let head = format!(
+        "INSERT INTO {}.{} ({}){} VALUES",
+        ident(namespace),
+        ident(&table.name),
+        written
+            .iter()
+            .map(|(_, column)| ident(&column.name))
+            .collect::<Vec<_>>()
+            .join(", "),
+        if overriding {
+            " OVERRIDING SYSTEM VALUE"
+        } else {
+            ""
+        }
+    );
+
+    Some(
+        rows.iter()
+            .map(|row| {
+                let values: Vec<String> = written
+                    .iter()
+                    .map(|(at, column)| {
+                        let value = row.values.get(*at).unwrap_or(&Value::Null);
+                        crate::literal::of(&column.data_type, value)
+                    })
+                    .collect();
+                format!("{head} ({});", values.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// Raw: a lone value has no delimiter to protect. `None` for a null.
+#[must_use]
+pub fn grid_cell(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        value => Some(cell::text(value)),
+    }
+}
+
+/// No heading: it is not a value.
+#[must_use]
+pub fn grid_column(rows: &[Row], column: usize) -> String {
+    let fields: Vec<String> = rows
+        .iter()
+        .map(|row| row.values.get(column).map_or_else(String::new, value))
+        .collect();
+
+    line(&fields)
+}
+
+#[must_use]
+pub fn detail_row(row: &DetailRow) -> String {
+    let fields = match row {
+        // SQL, pasted as written: CSV quoting would break it.
+        DetailRow::Code { text } => return text.clone(),
+        DetailRow::Identity { kind, name } => vec![kind.label().to_owned(), name.clone()],
+        DetailRow::KeyColumn { name, data_type } => vec![name.clone(), data_type.clone()],
+        DetailRow::Column {
+            name,
+            data_type,
+            kind,
+        } => vec![name.clone(), data_type.clone(), part(*kind).to_owned()],
+        DetailRow::Property { name, value } => vec![name.clone(), value.clone()],
+    };
+
+    line(&fields)
+}
+
+#[must_use]
+pub fn node(node: &Node<'_>) -> String {
+    let fields = match node {
+        Node::Database { name, .. } => vec![(*name).to_owned()],
+        Node::Schema { namespace, .. } => vec![namespace.name.clone()],
+        Node::Table { namespace, table } => {
+            vec![format!("{}.{}", namespace.name, table.name)]
+        }
+    };
+
+    line(&fields)
+}
+
+/// Joined statement and outcome, for pasting into a ticket.
+#[must_use]
+pub fn log_entry(entry: &Entry) -> String {
+    format!(
+        "{} {}",
+        entry.subject().text(),
+        outcome_text(entry.outcome())
+    )
+}
+
+/// No trailing newline: a paste into a shell must not submit itself.
+#[must_use]
+pub fn lines(items: impl Iterator<Item = String>) -> String {
+    items.collect::<Vec<_>>().join("\n")
+}
+
+#[must_use]
+pub fn grid_block(rows: &[Row], selected: &Ranges, columns: &Ranges) -> String {
+    lines(selected.indices().filter_map(|index| {
+        let row = rows.get(index)?;
+        let fields: Vec<String> = columns
+            .indices()
+            .filter_map(|column| row.values.get(column))
+            .map(value)
+            .collect();
+
+        Some(line(&fields))
+    }))
+}
+
+/// A column already yanks as its values in order; a set of columns repeats
+/// that.
+#[must_use]
+pub fn grid_columns(rows: &[Row], columns: &Ranges) -> String {
+    lines(columns.indices().map(|column| grid_column(rows, column)))
+}
+
+fn escaped(field: &str) -> String {
+    if field.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_owned()
+    }
+}
+
+/// A null yanks as nothing: CSV cannot tell it from the text "null".
+fn value(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        value => cell::text(value),
+    }
+}
+
+const fn part(kind: ColumnKind) -> &'static str {
+    match kind {
+        ColumnKind::PrimaryKey => "primary key",
+        ColumnKind::ForeignKey => "foreign key",
+        ColumnKind::Regular => "regular",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn column(name: &str, data_type: &str, default: Option<ColumnDefault>) -> crate::model::Column {
+        crate::model::Column {
+            name: name.to_owned(),
+            data_type: data_type.to_owned(),
+            nullable: true,
+            default,
+            comment: None,
+        }
+    }
+
+    fn orders() -> Table {
+        Table {
+            name: "Orders".to_owned(),
+            columns: vec![
+                column(
+                    "id",
+                    "bigint",
+                    Some(ColumnDefault::Identity { always: false }),
+                ),
+                column("note", "text", None),
+                column(
+                    "total",
+                    "numeric(10,2)",
+                    Some(ColumnDefault::Generated("1".to_owned())),
+                ),
+            ],
+            ..Table::default()
+        }
+    }
+
+    #[test]
+    fn rows_yank_as_one_insert_each_with_nulls_spelled_and_generated_columns_left_out() {
+        let columns = ["id", "note", "total"].map(str::to_owned);
+        let rows = [
+            Row {
+                values: vec![
+                    Value::Int(1),
+                    Value::Text("o'hara".to_owned()),
+                    Value::Numeric("2".to_owned()),
+                ],
+            },
+            Row {
+                values: vec![Value::Int(2), Value::Null, Value::Numeric("3".to_owned())],
+            },
+        ];
+
+        assert_eq!(
+            inserts("shop", &orders(), &columns, &rows).as_deref(),
+            Some(
+                "INSERT INTO shop.\"Orders\" (id, note) VALUES (1, 'o''hara'::text);\n\
+                 INSERT INTO shop.\"Orders\" (id, note) VALUES (2, NULL);"
+            )
+        );
+    }
+
+    #[test]
+    fn an_always_identity_keeps_its_value_by_overriding() {
+        let mut table = orders();
+        table.columns[0].default = Some(ColumnDefault::Identity { always: true });
+        let rows = [Row {
+            values: vec![Value::Int(1)],
+        }];
+
+        assert_eq!(
+            inserts("shop", &table, &["id".to_owned()], &rows).as_deref(),
+            Some("INSERT INTO shop.\"Orders\" (id) OVERRIDING SYSTEM VALUE VALUES (1);")
+        );
+    }
+
+    #[test]
+    fn a_page_holding_none_of_the_tables_writable_columns_yanks_nothing() {
+        assert_eq!(inserts("shop", &orders(), &["total".to_owned()], &[]), None);
+    }
+    use crate::clock::Stamp;
+    use crate::log::{Outcome, Subject};
+    use crate::model::{Page, Row, Schema, Table, Value};
+    use crate::selection::Range;
+    use crate::tree::Node;
+    use crate::view::{ColumnKind, DetailRow, IdentityKind};
+    use std::time::Duration;
+
+    fn sample_rows(rows: usize, columns: usize) -> Vec<Row> {
+        (0..rows)
+            .map(|row| Row {
+                values: (0..columns)
+                    .map(|column| Value::Text(format!("r{row}c{column}")))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    fn table(name: &str) -> Table {
+        Table {
+            name: name.to_owned(),
+            ..Table::default()
+        }
+    }
+
+    #[test]
+    fn a_field_is_quoted_only_when_it_has_to_be() {
+        assert_eq!(
+            line(&["plain".to_owned(), "has,comma".to_owned()]),
+            "plain,\"has,comma\""
+        );
+        assert_eq!(line(&["has\nnewline".to_owned()]), "\"has\nnewline\"");
+    }
+
+    #[test]
+    fn an_embedded_quote_is_doubled() {
+        assert_eq!(line(&["say \"hi\"".to_owned()]), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn a_line_ends_without_a_newline() {
+        assert!(!line(&["a".to_owned(), "b".to_owned()]).ends_with('\n'));
+    }
+
+    #[test]
+    fn a_null_yanks_as_an_empty_field() {
+        let row = Row {
+            values: vec![Value::Int(1), Value::Null],
+        };
+
+        assert_eq!(grid_row(&row), "1,");
+    }
+
+    #[test]
+    fn a_text_null_yanks_as_the_word() {
+        let row = Row {
+            values: vec![Value::Text("null".to_owned())],
+        };
+
+        assert_eq!(grid_row(&row), "null");
+    }
+
+    #[test]
+    fn a_yanked_value_is_not_ellipsised() {
+        let value = "x".repeat(usize::from(crate::config::MaxColumnWidth::default().get()) + 10);
+        let page = Page {
+            columns: vec!["blob".to_owned()],
+            rows: vec![Row {
+                values: vec![Value::Text(value.clone())],
+            }],
+            next: None,
+        };
+
+        let drawn_width = crate::grid::widths(&page, crate::config::MaxColumnWidth::default())[0];
+        assert_eq!(
+            drawn_width,
+            crate::config::MaxColumnWidth::default().get(),
+            "the grid draws this column capped, not at the value's full length"
+        );
+
+        assert_eq!(
+            grid_row(&page.rows[0]),
+            value,
+            "the yanked field keeps what the capped column the grid draws would have to ellipsise"
+        );
+    }
+
+    #[test]
+    fn a_column_row_carries_the_part_it_plays() {
+        let row = DetailRow::Column {
+            name: "created_at".to_owned(),
+            data_type: "timestamp".to_owned(),
+            kind: ColumnKind::ForeignKey,
+        };
+
+        assert_eq!(detail_row(&row), "created_at,timestamp,foreign key");
+    }
+
+    #[test]
+    fn a_key_column_yanks_its_name_and_type() {
+        let key = DetailRow::KeyColumn {
+            name: "id".to_owned(),
+            data_type: "uuid".to_owned(),
+        };
+
+        assert_eq!(detail_row(&key), "id,uuid");
+    }
+
+    #[test]
+    fn a_property_and_an_identity_row_yank_their_two_fields() {
+        let property = DetailRow::Property {
+            name: "price_check".to_owned(),
+            value: "CHECK (price >= 0)".to_owned(),
+        };
+        let identity = DetailRow::Identity {
+            kind: IdentityKind::Relation(crate::model::RelationKind::Table),
+            name: "users".to_owned(),
+        };
+
+        assert_eq!(detail_row(&property), "price_check,CHECK (price >= 0)");
+        assert_eq!(detail_row(&identity), "Table,users");
+    }
+
+    #[test]
+    fn a_schema_yanks_its_name_and_a_table_its_qualified_one() {
+        let namespace = Schema::empty("demo");
+        let users = table("users");
+
+        assert_eq!(
+            node(&Node::Schema {
+                namespace: &namespace,
+                unfolded: false
+            }),
+            "demo"
+        );
+        assert_eq!(
+            node(&Node::Table {
+                namespace: &namespace,
+                table: &users
+            }),
+            "demo.users"
+        );
+    }
+
+    #[test]
+    fn a_log_entry_yanks_its_subject_and_its_outcome_joined() {
+        let entry = Entry::new(
+            Stamp::default(),
+            Subject::Sentence("SELECT one".to_owned()),
+            Outcome::Cancelled,
+        );
+
+        assert_eq!(log_entry(&entry), "SELECT one ⊘ cancelled");
+    }
+
+    #[test]
+    fn a_log_entrys_outcome_is_the_same_text_the_projection_draws() {
+        let entry = Entry::new(
+            Stamp::default(),
+            Subject::Sentence("SELECT one".to_owned()),
+            Outcome::Succeeded {
+                detail: "1 row".to_owned(),
+                took: Duration::from_millis(4),
+            },
+        );
+
+        assert_eq!(log_entry(&entry), "SELECT one → 1 row, 4ms");
+    }
+
+    #[test]
+    fn a_cell_yanks_without_quoting() {
+        assert_eq!(
+            grid_cell(&Value::Text("Smith, John".to_owned())),
+            Some("Smith, John".to_owned()),
+            "a lone value has no delimiter to protect"
+        );
+        assert_eq!(
+            grid_cell(&Value::Text("he said \"hi\"".to_owned())),
+            Some("he said \"hi\"".to_owned()),
+            "nor any quote to double"
+        );
+    }
+
+    #[test]
+    fn a_cell_yank_is_not_ellipsised() {
+        let long = "x".repeat(usize::from(crate::config::MaxColumnWidth::default().get()) * 2);
+
+        assert_eq!(
+            grid_cell(&Value::Text(long.clone())),
+            Some(long),
+            "what is drawn is a window, what is yanked is the value"
+        );
+    }
+
+    #[test]
+    fn a_null_cell_yanks_nothing() {
+        assert_eq!(
+            grid_cell(&Value::Null),
+            None,
+            "an empty payload would ask the terminal to clear its clipboard"
+        );
+    }
+
+    #[test]
+    fn a_column_yanks_every_row_in_order_and_no_heading() {
+        let rows = vec![
+            Row {
+                values: vec![Value::Int(1), Value::Text("alice".to_owned())],
+            },
+            Row {
+                values: vec![Value::Int(2), Value::Text("bob".to_owned())],
+            },
+            Row {
+                values: vec![Value::Int(3), Value::Text("carol".to_owned())],
+            },
+        ];
+
+        assert_eq!(
+            grid_column(&rows, 1),
+            "alice,bob,carol",
+            "the values, top to bottom, and nothing in front of them"
+        );
+        assert_eq!(grid_column(&rows, 0), "1,2,3");
+    }
+
+    #[test]
+    fn a_null_in_a_column_yanks_as_an_empty_field() {
+        let rows = vec![
+            Row {
+                values: vec![Value::Text("alice".to_owned())],
+            },
+            Row {
+                values: vec![Value::Null],
+            },
+            Row {
+                values: vec![Value::Text("carol".to_owned())],
+            },
+        ];
+
+        assert_eq!(
+            grid_column(&rows, 0),
+            "alice,,carol",
+            "between delimiters, empty means absent"
+        );
+    }
+
+    #[test]
+    fn a_column_field_is_escaped_the_way_a_row_field_is() {
+        let rows = vec![Row {
+            values: vec![Value::Text("Smith, John".to_owned())],
+        }];
+
+        assert_eq!(
+            grid_column(&rows, 0),
+            "\"Smith, John\"",
+            "here the comma is structural, so the field has to say it is not"
+        );
+    }
+
+    /// A short row contributes an empty field rather than shortening the line.
+    #[test]
+    fn a_row_too_short_contributes_an_empty_field() {
+        let rows = vec![
+            Row {
+                values: vec![Value::Text("alice".to_owned())],
+            },
+            Row { values: Vec::new() },
+        ];
+
+        assert_eq!(grid_column(&rows, 0), "alice,");
+    }
+
+    #[test]
+    fn lines_join_without_a_trailing_newline() {
+        assert_eq!(
+            lines(["a".to_owned(), "b".to_owned()].into_iter()),
+            "a\nb",
+            "a trailing newline would make a paste into a shell submit itself"
+        );
+    }
+
+    #[test]
+    fn a_block_yanks_one_line_per_row_and_only_the_columns_inside_it() {
+        let rows = vec![
+            Row {
+                values: vec![
+                    Value::Int(1),
+                    Value::Text("alice".to_owned()),
+                    Value::Text("x".to_owned()),
+                ],
+            },
+            Row {
+                values: vec![
+                    Value::Int(2),
+                    Value::Text("bob".to_owned()),
+                    Value::Text("y".to_owned()),
+                ],
+            },
+            Row {
+                values: vec![
+                    Value::Int(3),
+                    Value::Text("carol".to_owned()),
+                    Value::Text("z".to_owned()),
+                ],
+            },
+        ];
+
+        assert_eq!(
+            grid_block(
+                &rows,
+                &Ranges::of(Range::new(0, 1)),
+                &Ranges::of(Range::new(1, 2))
+            ),
+            "alice,x\nbob,y"
+        );
+    }
+
+    #[test]
+    fn a_block_spanning_every_column_is_the_rows_themselves() {
+        let rows = vec![
+            Row {
+                values: vec![Value::Int(1), Value::Null],
+            },
+            Row {
+                values: vec![Value::Int(2), Value::Text("bob".to_owned())],
+            },
+        ];
+
+        assert_eq!(
+            grid_block(
+                &rows,
+                &Ranges::of(Range::new(0, 1)),
+                &Ranges::of(Range::new(0, 1))
+            ),
+            "1,\n2,bob"
+        );
+    }
+
+    #[test]
+    fn a_column_range_yanks_one_line_per_column() {
+        let rows = vec![
+            Row {
+                values: vec![Value::Int(1), Value::Text("alice".to_owned())],
+            },
+            Row {
+                values: vec![Value::Int(2), Value::Text("bob".to_owned())],
+            },
+        ];
+
+        assert_eq!(
+            grid_columns(&rows, &Ranges::of(Range::new(0, 1))),
+            "1,2\nalice,bob",
+            "a column is its values top to bottom, and a range of columns is that once per column"
+        );
+    }
+
+    #[test]
+    fn a_block_ending_past_the_page_yanks_what_is_there() {
+        let rows = vec![Row {
+            values: vec![Value::Int(1)],
+        }];
+
+        assert_eq!(
+            grid_block(
+                &rows,
+                &Ranges::of(Range::new(0, 4)),
+                &Ranges::of(Range::new(0, 4))
+            ),
+            "1"
+        );
+    }
+
+    #[test]
+    fn a_block_of_two_groups_yanks_one_line_per_row_with_no_separator() {
+        // The groups leave no trace in the output.
+        let rows = sample_rows(4, 2);
+        let mut selected = Ranges::of(Range::new(0, 0));
+        selected.insert(Range::new(3, 3));
+
+        assert_eq!(
+            grid_block(&rows, &selected, &Ranges::of(Range::new(0, 1))),
+            format!("{}\n{}", grid_row(&rows[0]), grid_row(&rows[3]))
+        );
+    }
+
+    #[test]
+    fn a_block_takes_only_the_columns_the_groups_hold() {
+        let rows = sample_rows(2, 4);
+        let mut columns = Ranges::of(Range::new(0, 0));
+        columns.insert(Range::new(3, 3));
+
+        let yanked = grid_block(&rows, &Ranges::of(Range::new(0, 0)), &columns);
+
+        assert_eq!(
+            yanked, "r0c0,r0c3",
+            "the disjoint columns, not merely two of them"
+        );
+    }
+
+    #[test]
+    fn disjoint_columns_yank_one_line_each_left_to_right() {
+        let rows = sample_rows(3, 4);
+        let mut columns = Ranges::of(Range::new(0, 0));
+        columns.insert(Range::new(2, 2));
+
+        assert_eq!(
+            grid_columns(&rows, &columns),
+            format!("{}\n{}", grid_column(&rows, 0), grid_column(&rows, 2))
+        );
+    }
+}

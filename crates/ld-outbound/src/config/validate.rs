@@ -1,0 +1,928 @@
+//! The merged layer into the total config type. The smallest unit is dropped: a
+//! bad entry loses the entry, a bad scalar loses the key.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use ld_domain::config::{
+    Background, CatalogQueries, ClientIdentity, ClipboardMb, Config, ConnectionConfig,
+    ConnectionName, Credential, CustomTheme, Diagnostic, DriverConfig, ExportConfig, GridConfig,
+    HistoryConfig, HistoryLimit, Icons, LogConfig, MaxColumnWidth, Millis, Mouse, Origin,
+    OutOfRange, PageRows, PageSize, PanelRatios, Rgb, Span, SslMode, Trust,
+};
+use ld_domain::posture::Posture;
+use ld_domain::style::Severity;
+use ld_domain::theme::{BuiltIn, Ours, Role, ThemeChoice, ThemeName};
+
+use super::url::{self, Url};
+use super::wire::{
+    ConnectionLayer, CredentialLayer, CredentialSource, DriverLayer, ExportLayer, GridLayer,
+    HistoryLayer, Layer, LayoutLayer, Located, ThemeLayer,
+};
+
+/// Each diagnostic takes its origin from the value that failed, so it names the
+/// file the key was written in.
+struct Report {
+    fallback: Origin,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl Report {
+    fn at<V>(&self, located: &Located<V>) -> (Origin, Option<Span>) {
+        (
+            located
+                .origin()
+                .cloned()
+                .unwrap_or_else(|| self.fallback.clone()),
+            located.span(),
+        )
+    }
+
+    fn error<V>(&mut self, located: &Located<V>, message: String) {
+        let (origin, span) = self.at(located);
+
+        self.diagnostics.push(Diagnostic {
+            origin,
+            span,
+            severity: Severity::Danger,
+            message,
+        });
+    }
+
+    fn error_unlocated(&mut self, message: String) {
+        self.diagnostics.push(Diagnostic {
+            origin: self.fallback.clone(),
+            span: None,
+            severity: Severity::Danger,
+            message,
+        });
+    }
+
+    fn error_at(&mut self, at: Option<(Origin, Span)>, message: String) {
+        let (origin, span) = at.map_or_else(
+            || (self.fallback.clone(), None),
+            |(origin, span)| (origin, Some(span)),
+        );
+
+        self.diagnostics.push(Diagnostic {
+            origin,
+            span,
+            severity: Severity::Danger,
+            message,
+        });
+    }
+
+    fn warn<V>(&mut self, located: &Located<V>, message: String) {
+        let (origin, span) = self.at(located);
+
+        self.diagnostics.push(Diagnostic {
+            origin,
+            span,
+            severity: Severity::Warning,
+            message,
+        });
+    }
+
+    fn keep<T, V>(
+        &mut self,
+        result: Result<T, OutOfRange>,
+        at: &Located<V>,
+        key: &str,
+    ) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                let (origin, span) = self.at(at);
+
+                self.diagnostics.push(Diagnostic {
+                    origin,
+                    span,
+                    severity: Severity::Danger,
+                    message: format!("{key}: {error}"),
+                });
+                None
+            }
+        }
+    }
+}
+
+pub(crate) fn validate(merged: Layer) -> (Config, Vec<Diagnostic>) {
+    let mut report = Report {
+        fallback: Origin::new("<config>"),
+        diagnostics: Vec::new(),
+    };
+    let themes = themes(merged.themes, &mut report);
+    let connections = connections(merged.connections, &mut report);
+    let config = Config {
+        // Against the merged `themes`: the other file may define it.
+        theme: theme(merged.theme, &themes, &mut report),
+        background: background(merged.background, &mut report),
+        icons: merged.icons.map_or_else(Default::default, bool_to_icons),
+        mouse: merged.mouse.map_or_else(Default::default, bool_to_mouse),
+        layout: layout(merged.layout, &mut report),
+        grid: grid(merged.grid, &mut report),
+        history: history(merged.history, &mut report),
+        log: LogConfig {
+            catalog: match merged.log.and_then(|log| log.catalog) {
+                Some(true) => CatalogQueries::Shown,
+                Some(false) | None => CatalogQueries::Hidden,
+            },
+        },
+        driver: driver(merged.driver, &mut report),
+        export: export(merged.export, &mut report),
+        default_connection: default_connection(
+            merged.default_connection,
+            &connections,
+            &mut report,
+        ),
+        themes,
+        connections,
+    };
+
+    (config, report.diagnostics)
+}
+
+fn grid(layer: Option<GridLayer>, report: &mut Report) -> GridConfig {
+    let Some(layer) = layer else {
+        return GridConfig::default();
+    };
+    let width = layer.max_column_width.and_then(|value| {
+        report.keep(
+            MaxColumnWidth::try_new(value.value),
+            &value,
+            "grid.max_column_width",
+        )
+    });
+    let rows = layer
+        .page_rows
+        .and_then(|value| report.keep(PageRows::try_new(value.value), &value, "grid.page_rows"));
+
+    GridConfig {
+        max_column_width: width.unwrap_or_default(),
+        page_rows: rows.unwrap_or_default(),
+    }
+}
+
+fn history(layer: Option<HistoryLayer>, report: &mut Report) -> HistoryConfig {
+    let limit = layer
+        .and_then(|layer| layer.limit)
+        .and_then(|value| report.keep(HistoryLimit::try_new(value.value), &value, "history.limit"));
+
+    HistoryConfig {
+        limit: limit.unwrap_or_default(),
+    }
+}
+
+/// One unit: a partial set falls back to the default whole.
+fn layout(layer: Option<LayoutLayer>, report: &mut Report) -> PanelRatios {
+    let Some(layer) = layer else {
+        return PanelRatios::default();
+    };
+    let default = PanelRatios::default();
+    let sidebar = layer
+        .sidebar
+        .as_ref()
+        .map_or(default.sidebar(), |located| located.value);
+    let ddl = layer
+        .ddl
+        .as_ref()
+        .map_or(default.ddl(), |located| located.value);
+    let queries = layer
+        .queries
+        .as_ref()
+        .map_or(default.queries(), |located| located.value);
+
+    if let Ok(ratios) = PanelRatios::try_new(sidebar, ddl, queries) {
+        return ratios;
+    }
+
+    // Each share is checked alone, so the diagnostic blames the one out of
+    // range.
+    let failing = [
+        (
+            layer.sidebar.as_ref(),
+            PanelRatios::try_new(sidebar, default.ddl(), default.queries()),
+        ),
+        (
+            layer.ddl.as_ref(),
+            PanelRatios::try_new(default.sidebar(), ddl, default.queries()),
+        ),
+        (
+            layer.queries.as_ref(),
+            PanelRatios::try_new(default.sidebar(), default.ddl(), queries),
+        ),
+    ]
+    .into_iter()
+    .find_map(|(located, isolated)| located.zip(isolated.err()));
+
+    match failing {
+        Some((located, error)) => report.error(located, format!("layout: {error}")),
+        // Unreachable while shares are checked only against `5..=95`, but
+        // reported for when joint validation lands.
+        None => report.error_unlocated(
+            "layout: shares are individually in range but not jointly valid — using default"
+                .to_owned(),
+        ),
+    }
+
+    PanelRatios::default()
+}
+
+fn driver(layer: Option<DriverLayer>, report: &mut Report) -> DriverConfig {
+    let Some(layer) = layer else {
+        return DriverConfig::default();
+    };
+    let page_size = layer
+        .page_size
+        .and_then(|value| report.keep(PageSize::try_new(value.value), &value, "driver.page_size"))
+        .unwrap_or_default();
+    let request_timeout = layer
+        .request_timeout_ms
+        .and_then(|value| {
+            report.keep(
+                Millis::try_new(value.value),
+                &value,
+                "driver.request_timeout_ms",
+            )
+        })
+        .unwrap_or_default();
+    let connect_timeout = layer
+        .connect_timeout_ms
+        .and_then(|value| {
+            report.keep(
+                Millis::try_new(value.value),
+                &value,
+                "driver.connect_timeout_ms",
+            )
+        })
+        .unwrap_or_default();
+    DriverConfig {
+        page_size,
+        request_timeout,
+        connect_timeout,
+    }
+}
+
+fn export(layer: Option<ExportLayer>, report: &mut Report) -> ExportConfig {
+    let Some(layer) = layer else {
+        return ExportConfig::default();
+    };
+    let clipboard = layer.clipboard_mb.and_then(|value| {
+        report.keep(
+            ClipboardMb::try_new(value.value),
+            &value,
+            "export.clipboard_mb",
+        )
+    });
+
+    ExportConfig {
+        path: layer.path.map(PathBuf::from),
+        prefix: layer.prefix,
+        clipboard_mb: clipboard.unwrap_or_default(),
+    }
+}
+
+fn background(layer: Option<Located<String>>, report: &mut Report) -> Background {
+    let Some(located) = layer else {
+        return Background::default();
+    };
+
+    match located.value.as_str() {
+        "theme" => Background::Theme,
+        "terminal" => Background::Terminal,
+        _ => match Rgb::parse(&located.value) {
+            Ok(rgb) => Background::Fixed(rgb),
+            Err(error) => {
+                report.error(&located, format!("background: {error}"));
+                Background::Theme
+            }
+        },
+    }
+}
+
+fn themes(layers: Vec<ThemeLayer>, report: &mut Report) -> Vec<CustomTheme> {
+    let mut themes = Vec::new();
+
+    for layer in layers {
+        let name = match ThemeName::try_new(&layer.name.value) {
+            Ok(name) => name,
+            Err(error) => {
+                report.error(&layer.name, format!("theme.name: {error}"));
+                continue;
+            }
+        };
+
+        if ThemeChoice::builtin_from_slug(name.as_str()).is_some() {
+            report.error(
+                &layer.name,
+                format!("theme `{}` claims a built-in slug", name.as_str()),
+            );
+            continue;
+        }
+
+        let extends = match layer.extends {
+            None => BuiltIn::Ours(Ours::DefaultDark),
+            Some(located) => {
+                let Some(built_in) = ThemeChoice::builtin_from_slug(&located.value) else {
+                    report.error(
+                        &located,
+                        format!(
+                            "theme `{}`: extends unknown theme `{}`",
+                            name.as_str(),
+                            located.value
+                        ),
+                    );
+                    continue;
+                };
+                built_in
+            }
+        };
+
+        let mut colors = BTreeMap::new();
+        for (key, located) in layer.colors {
+            match Role::from_key(&key) {
+                Some(role) => match Rgb::parse(&located.value) {
+                    Ok(rgb) => {
+                        colors.insert(role, rgb);
+                    }
+                    Err(error) => {
+                        report.error(
+                            &located,
+                            format!("theme `{}`.{key}: {error}", name.as_str()),
+                        );
+                    }
+                },
+                None => report.warn(
+                    &located,
+                    format!("theme `{}`: unknown colour role `{key}`", name.as_str()),
+                ),
+            }
+        }
+
+        themes.push(CustomTheme {
+            name,
+            extends,
+            colors,
+        });
+    }
+
+    themes
+}
+
+fn connections(layers: Vec<ConnectionLayer>, report: &mut Report) -> Vec<ConnectionConfig> {
+    let mut connections = Vec::new();
+
+    for layer in layers {
+        let name = match ConnectionName::try_new(&layer.name.value) {
+            Ok(name) => name,
+            Err(error) => {
+                report.error(&layer.name, format!("connection.name: {error}"));
+                continue;
+            }
+        };
+        let blame = |reason: String| format!("connection `{}`: {reason}", name.as_str());
+
+        let posture = match &layer.posture {
+            None => Posture::default(),
+            Some(located) => match located.value.as_str() {
+                "read-only" => Posture::ReadOnly,
+                "writable" => Posture::Writable,
+                "protected" => Posture::Protected,
+                other => {
+                    report.error(located, blame(format!("posture `{other}` unknown")));
+                    continue;
+                }
+            },
+        };
+
+        match connection(name.clone(), posture, layer, report) {
+            Ok(connection) => connections.push(connection),
+            Err((at, reason)) => report.error_at(at, blame(reason)),
+        }
+    }
+
+    connections
+}
+
+type Refusal = (Option<(Origin, Span)>, String);
+
+fn connection(
+    name: ConnectionName,
+    posture: Posture,
+    layer: ConnectionLayer,
+    report: &mut Report,
+) -> Result<ConnectionConfig, Refusal> {
+    let mut config = ConnectionConfig::named(name);
+    config.posture = posture;
+    let refuse = |at: &Located<String>, reason: String| (at.at.clone(), reason);
+    let unlocated = |reason: String| (None, reason);
+
+    if let Some(at) = &layer.url {
+        let stated: Vec<_> = [
+            ("host", layer.host.is_some()),
+            ("port", layer.port.is_some()),
+            ("database", layer.database.is_some()),
+            ("user", layer.user.is_some()),
+            ("password", layer.password.is_some()),
+            ("sslmode", layer.sslmode.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(key, stated)| stated.then_some(key))
+        .collect();
+        if !stated.is_empty() {
+            return Err(refuse(
+                at,
+                format!(
+                    "`url` carries {} itself; state them in one place",
+                    stated.join(", ")
+                ),
+            ));
+        }
+
+        let Url {
+            host,
+            port,
+            database,
+            user,
+            password,
+            params,
+            ignored,
+        } = url::parse(&at.value).map_err(|reason| refuse(at, format!("url: {reason}")))?;
+        for param in ignored {
+            report.warn(
+                at,
+                format!("url: `{param}` is not a parameter LazyDB reads; ignored"),
+            );
+        }
+
+        config.host = host;
+        config.port = port;
+        config.database = database;
+        config.user = user;
+        config.password = password.map(Credential::Literal);
+        config.sslmode = params
+            .sslmode
+            .map(|mode| ssl_mode(&mode).map_err(|reason| refuse(at, reason)))
+            .transpose()?;
+        return tls(config, params.sslrootcert, params.sslcert, params.sslkey).map_err(unlocated);
+    }
+
+    config.host = layer.host;
+    config.port = match layer.port {
+        None => None,
+        Some(port) => {
+            let valid = u16::try_from(port.value)
+                .ok()
+                .and_then(std::num::NonZeroU16::new);
+            let Some(valid) = valid else {
+                return Err((port.at, format!("port {} is not 1..=65535", port.value)));
+            };
+            Some(valid)
+        }
+    };
+    config.database = layer.database;
+    config.user = layer.user;
+    config.password = layer.password.map(|credential| match credential {
+        CredentialLayer::Literal(value) => Credential::Literal(value),
+        CredentialLayer::Reference(CredentialSource::Env(name)) => Credential::Env(name),
+        CredentialLayer::Reference(CredentialSource::File(path)) => {
+            Credential::File(PathBuf::from(path))
+        }
+    });
+    config.sslmode = layer
+        .sslmode
+        .map(|mode| ssl_mode(&mode.value).map_err(|reason| refuse(&mode, reason)))
+        .transpose()?;
+
+    tls(config, layer.sslrootcert, layer.sslcert, layer.sslkey).map_err(unlocated)
+}
+
+fn ssl_mode(word: &str) -> Result<SslMode, String> {
+    SslMode::ALL
+        .into_iter()
+        .find(|mode| mode.label() == word)
+        .ok_or_else(|| {
+            let known: Vec<_> = SslMode::ALL.iter().map(|mode| mode.label()).collect();
+            format!("sslmode `{word}` unknown — {}", known.join(" | "))
+        })
+}
+
+fn tls(
+    mut config: ConnectionConfig,
+    rootcert: Option<String>,
+    cert: Option<String>,
+    key: Option<String>,
+) -> Result<ConnectionConfig, String> {
+    config.identity = match (cert, key) {
+        (None, None) => None,
+        (Some(cert), Some(key)) => Some(ClientIdentity {
+            cert: PathBuf::from(cert),
+            key: PathBuf::from(key),
+        }),
+        _ => return Err("`sslcert` and `sslkey` are stated together or not at all".to_owned()),
+    };
+    config.trust = rootcert.map_or(Trust::System, |path| Trust::CaFile(PathBuf::from(path)));
+
+    if config.sslmode == Some(SslMode::Disable)
+        && (config.identity.is_some() || config.trust != Trust::System)
+    {
+        return Err(
+            "certificates are stated but `sslmode = \"disable\"` never uses them".to_owned(),
+        );
+    }
+    Ok(config)
+}
+
+fn theme(
+    layer: Option<Located<String>>,
+    themes: &[CustomTheme],
+    report: &mut Report,
+) -> ThemeChoice {
+    let Some(located) = layer else {
+        return ThemeChoice::default();
+    };
+
+    if let Some(built_in) = ThemeChoice::builtin_from_slug(&located.value) {
+        return built_in.into();
+    }
+
+    if let Some(custom) = themes
+        .iter()
+        .find(|theme| theme.name.as_str() == located.value)
+    {
+        return ThemeChoice::Custom(custom.name.clone());
+    }
+
+    report.error(
+        &located,
+        format!("theme `{}` is not defined", located.value),
+    );
+    ThemeChoice::default()
+}
+
+fn default_connection(
+    layer: Option<Located<String>>,
+    connections: &[ConnectionConfig],
+    report: &mut Report,
+) -> Option<ConnectionName> {
+    let located = layer?;
+
+    if let Some(connection) = connections
+        .iter()
+        .find(|c| c.name.as_str() == located.value)
+    {
+        return Some(connection.name.clone());
+    }
+
+    report.error(
+        &located,
+        format!("default_connection `{}` is not defined", located.value),
+    );
+    None
+}
+
+fn bool_to_icons(value: bool) -> Icons {
+    if value { Icons::On } else { Icons::Off }
+}
+
+fn bool_to_mouse(value: bool) -> Mouse {
+    if value { Mouse::On } else { Mouse::Off }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{merge::merge, parse};
+
+    fn config_of(sources: &[&str]) -> (Config, Vec<Diagnostic>) {
+        let origin = Origin::new("test.toml");
+        let layers = sources
+            .iter()
+            .filter_map(|source| parse(source, &origin).0)
+            .collect();
+        let (merged, mut diagnostics) = merge(layers);
+        let (config, more) = validate(merged);
+        diagnostics.extend(more);
+
+        (config, diagnostics)
+    }
+
+    #[test]
+    fn a_connection_with_an_unknown_posture_is_dropped_and_the_rest_of_the_layer_stands() {
+        let (config, diagnostics) = config_of(&["theme = \"ash-dark\"\n\
+             [[connections]]\nname = \"dev\"\nposture = \"read\"\n\
+             [[connections]]\nname = \"prod\"\n"]);
+
+        assert_eq!(
+            config.theme,
+            ThemeChoice::Ours(Ours::AshDark),
+            "the layer still applies"
+        );
+        assert_eq!(config.connections.len(), 1);
+        assert_eq!(config.connections[0].name.as_str(), "prod");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("dev") && d.message.contains("posture"))
+        );
+    }
+
+    #[test]
+    fn a_key_out_of_range_falls_through_to_the_default_and_reports() {
+        let (config, diagnostics) = config_of(&["[grid]\nmax_column_width = 0\n"]);
+
+        assert_eq!(config.grid.max_column_width, MaxColumnWidth::default());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, Severity::Danger);
+    }
+
+    #[test]
+    fn a_stated_page_size_for_the_grid_is_kept() {
+        let (config, diagnostics) = config_of(&["[grid]\npage_rows = 50\n"]);
+
+        assert_eq!(config.grid.page_rows.get(), 50);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_stated_history_limit_is_kept() {
+        let (config, diagnostics) = config_of(&["[history]\nlimit = 25\n"]);
+
+        assert_eq!(config.history.limit.get(), 25);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_history_limit_of_zero_turns_the_history_off() {
+        let (config, diagnostics) = config_of(&["[history]\nlimit = 0\n"]);
+
+        assert!(config.history.limit.is_off());
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_history_limit_out_of_range_falls_back_to_the_default() {
+        let (config, diagnostics) = config_of(&["[history]\nlimit = 10001\n"]);
+
+        assert_eq!(config.history.limit.get(), 100);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("history.limit"));
+    }
+
+    #[test]
+    fn a_page_size_for_the_grid_out_of_range_falls_back_to_the_default() {
+        let (config, diagnostics) = config_of(&["[grid]\npage_rows = 0\n"]);
+
+        assert_eq!(config.grid.page_rows.get(), 200);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("grid.page_rows"));
+    }
+
+    #[test]
+    fn a_stated_column_width_is_kept() {
+        let (config, diagnostics) = config_of(&["[grid]\nmax_column_width = 40\n"]);
+
+        assert_eq!(config.grid.max_column_width.get(), 40);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_layout_failure_blames_the_share_that_is_out_of_range_not_the_first_one_stated() {
+        let (config, diagnostics) = config_of(&["[layout]\nsidebar = 50\nddl = 3\n"]);
+
+        assert_eq!(config.layout, PanelRatios::default());
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0].message.contains("ddl"),
+            "must name the failing share, not sidebar: {diagnostics:?}"
+        );
+        assert_eq!(
+            diagnostics[0].span.map(|span| span.line),
+            Some(3),
+            "must point at ddl's line, not sidebar's: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_theme_named_in_one_file_and_defined_in_the_other_resolves() {
+        let (config, diagnostics) = config_of(&[
+            "theme = \"midnight\"\n",
+            "[[themes]]\nname = \"midnight\"\nextends = \"ash-dark\"\n[themes.colors]\nbase = \"#0b0d12\"\n",
+        ]);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            config.theme,
+            ThemeChoice::Custom(ThemeName::try_new("midnight").expect("valid")),
+            "a cross-reference is resolved after the merge, not within a layer"
+        );
+        assert_eq!(
+            config.themes[0].colors[&Role::Base],
+            Rgb {
+                red: 0x0b,
+                green: 0x0d,
+                blue: 0x12
+            }
+        );
+    }
+
+    #[test]
+    fn a_theme_that_names_nothing_falls_back_to_the_default_and_reports() {
+        let (config, diagnostics) = config_of(&["theme = \"nowhere\"\n"]);
+
+        assert_eq!(config.theme, ThemeChoice::default());
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("nowhere"));
+    }
+
+    #[test]
+    fn a_default_connection_naming_nothing_falls_back_to_none_and_reports() {
+        let (config, diagnostics) = config_of(&["default_connection = \"nowhere\"\n"]);
+
+        assert!(config.default_connection.is_none());
+        assert_eq!(diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn a_custom_theme_claiming_a_built_in_slug_is_dropped() {
+        let (config, diagnostics) = config_of(&["[[themes]]\nname = \"default-dark\"\n"]);
+
+        assert!(config.themes.is_empty());
+        assert!(diagnostics[0].message.contains("default-dark"));
+    }
+
+    #[test]
+    fn a_background_is_a_word_or_a_hex() {
+        assert_eq!(
+            config_of(&["background = \"terminal\"\n"]).0.background,
+            Background::Terminal
+        );
+        assert_eq!(
+            config_of(&["background = \"theme\"\n"]).0.background,
+            Background::Theme
+        );
+        assert_eq!(
+            config_of(&["background = \"#0b0d12\"\n"]).0.background,
+            Background::Fixed(Rgb {
+                red: 0x0b,
+                green: 0x0d,
+                blue: 0x12
+            })
+        );
+        let (config, diagnostics) = config_of(&["background = \"puce\"\n"]);
+        assert_eq!(config.background, Background::Theme);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("background: ")),
+            "the diagnostic must name the key it is about, not only the value: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_colour_role_is_a_warning_and_the_theme_survives() {
+        let (config, diagnostics) = config_of(&[
+            "[[themes]]\nname = \"midnight\"\n[themes.colors]\nbaes = \"#0b0d12\"\nfocus = \"#7aa2f7\"\n",
+        ]);
+
+        assert_eq!(config.themes.len(), 1);
+        assert_eq!(config.themes[0].colors.len(), 1);
+        let unknown_role = diagnostics
+            .iter()
+            .find(|d| d.message.contains("baes"))
+            .expect("the unknown role is reported");
+        assert_eq!(unknown_role.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn an_unknown_role_is_a_warning_but_a_malformed_hex_on_a_real_role_is_an_error_and_only_that_theme_survives_with_what_was_valid()
+     {
+        let (config, diagnostics) = config_of(&[
+            "[[themes]]\nname = \"midnight\"\n[themes.colors]\nbaes = \"#0b0d12\"\nfocus = \"not-a-colour\"\nbase = \"#7aa2f7\"\n",
+        ]);
+
+        assert_eq!(config.themes.len(), 1, "the theme survives both drops");
+        assert_eq!(
+            config.themes[0].colors.len(),
+            1,
+            "only the valid colour is kept"
+        );
+
+        let unknown_role = diagnostics
+            .iter()
+            .find(|d| d.message.contains("baes"))
+            .expect("the unknown role is reported");
+        assert_eq!(unknown_role.severity, Severity::Warning);
+
+        let malformed_hex = diagnostics
+            .iter()
+            .find(|d| d.message.contains("focus"))
+            .expect("the malformed hex is reported");
+        assert_eq!(malformed_hex.severity, Severity::Danger);
+    }
+
+    #[test]
+    fn a_password_is_read_as_a_literal_or_as_a_reference() {
+        let (config, _) = config_of(&["[[connections]]\nname = \"a\"\npassword = \"hunter2\"\n\
+             [[connections]]\nname = \"b\"\npassword = { env = \"DEV_PW\" }\n\
+             [[connections]]\nname = \"c\"\n"]);
+
+        assert_eq!(
+            config.connections[0].password,
+            Some(Credential::Literal("hunter2".to_owned()))
+        );
+        assert_eq!(
+            config.connections[1].password,
+            Some(Credential::Env("DEV_PW".to_owned()))
+        );
+        assert_eq!(
+            config.connections[2].password, None,
+            "left to PGPASSWORD and the passfile"
+        );
+    }
+
+    #[test]
+    fn a_connection_stating_only_its_name_leaves_everything_to_libpq() {
+        let (config, diagnostics) = config_of(&["[[connections]]\nname = \"bare\"\n"]);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            config.connections[0],
+            ConnectionConfig::named(ConnectionName::try_new("bare").unwrap())
+        );
+    }
+
+    #[test]
+    fn the_libpq_keys_are_read_as_stated() {
+        let (config, diagnostics) = config_of(&["[[connections]]\nname = \"prod\"\n\
+             host = \"db\"\nport = 6543\ndatabase = \"orders\"\nuser = \"ana\"\n\
+             sslmode = \"verify-full\"\nsslrootcert = \"/ca.pem\"\n\
+             sslcert = \"/c.pem\"\nsslkey = \"/k.pem\"\n"]);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let prod = &config.connections[0];
+        assert_eq!(prod.address(), "db:6543/orders");
+        assert_eq!(prod.user.as_deref(), Some("ana"));
+        assert_eq!(prod.sslmode, Some(SslMode::VerifyFull));
+        assert_eq!(prod.trust, Trust::CaFile(PathBuf::from("/ca.pem")));
+        assert_eq!(
+            prod.identity,
+            Some(ClientIdentity {
+                cert: PathBuf::from("/c.pem"),
+                key: PathBuf::from("/k.pem"),
+            })
+        );
+    }
+
+    fn refused(body: &str, about: &str) {
+        let (config, diagnostics) =
+            config_of(&[format!("[[connections]]\nname = \"prod\"\n{body}\n").as_str()]);
+
+        assert!(config.connections.is_empty(), "{body}");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("prod") && d.message.contains(about)),
+            "{body}: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_connection_that_contradicts_itself_is_dropped_and_says_why() {
+        refused("port = 0", "port");
+        refused("port = 70000", "port");
+        refused("sslmode = \"allow\"", "sslmode");
+        refused("sslcert = \"/c.pem\"", "sslkey");
+        refused(
+            "sslmode = \"disable\"\nsslrootcert = \"/ca.pem\"",
+            "disable",
+        );
+        refused("url = \"mysql://db/app\"", "url");
+        refused("url = \"postgresql://db/app\"\nhost = \"db\"", "host");
+    }
+
+    #[test]
+    fn a_url_fills_the_keys_it_carries() {
+        let (config, diagnostics) = config_of(&["[[connections]]\nname = \"app\"\n\
+             url = \"jdbc:postgresql://db:5433/orders?user=svc&password=pw&sslmode=require&ssl=true\"\n"]);
+
+        let app = &config.connections[0];
+        assert_eq!(app.address(), "db:5433/orders");
+        assert_eq!(app.user.as_deref(), Some("svc"));
+        assert_eq!(app.password, Some(Credential::Literal("pw".to_owned())));
+        assert_eq!(app.sslmode, Some(SslMode::Require));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, Severity::Warning);
+        assert!(diagnostics[0].message.contains("`ssl`"));
+    }
+
+    #[test]
+    fn the_catalog_queries_are_logged_only_when_asked_for() {
+        let (unset, _) = config_of(&[""]);
+        let (shown, diagnostics) = config_of(&["[log]\ncatalog = true\n"]);
+
+        assert_eq!(unset.log.catalog, CatalogQueries::Hidden);
+        assert_eq!(shown.log.catalog, CatalogQueries::Shown);
+        assert!(diagnostics.is_empty());
+    }
+}

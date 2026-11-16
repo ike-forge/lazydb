@@ -1,0 +1,36 @@
+[package]
+name = "ld-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "A terminal UI for PostgreSQL"
+
+[[bin]]
+name = "lazydb"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+ld-domain.workspace = true
+ld-inbound.workspace = true
+ld-outbound.workspace = true
+ratatui.workspace = true
+tokio.workspace = true
+
+# The ConfigSink double in effects.rs. A port is `#[async_trait]`, so a fake
+# for one needs the same attribute.
+[dev-dependencies]
+async-trait.workspace = true
+
+[lints]
+workspace = true
+
+# The workspace is `publish = false`, which dist skips by default.
+[package.metadata.dist]
+dist = true
+formula = "lazydb"
