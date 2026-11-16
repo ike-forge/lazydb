@@ -44,7 +44,7 @@ description = "Fast test tiers: domain, scenario, render"
 run = "cargo nextest run --workspace --no-tests=pass"
 
 [tasks."test:it"]
-description = "Integration tier against the fixture Postgres (requires a container)"
+description = "Integration tier against the fixture servers (requires `mise run db:up`)"
 run = "cargo nextest run --workspace --features integration --no-tests=pass"
 
 [tasks.ci]
@@ -52,13 +52,20 @@ description = "Everything CI gates on"
 depends = ["check", "test"]
 
 [tasks."db:up"]
-description = "Start the fixture Postgres; seeded on first start from docker/seed"
-run = "docker compose -f docker/compose.yaml up -d --wait postgres"
+description = "Start the fixture Postgres and Cassandra, seeded on first start"
+run = [
+    "docker compose -f docker/compose.yaml up -d --wait postgres cassandra",
+    "docker compose -f docker/compose.yaml run --rm cassandra-seed",
+]
 
 [tasks."db:down"]
-description = "Stop the fixture Postgres and drop its volume"
+description = "Stop the fixtures and drop their volumes"
 run = "docker compose -f docker/compose.yaml down -v"
 
 [tasks."db:psql"]
 description = "Open psql against the fixture"
 run = "docker compose -f docker/compose.yaml exec postgres psql -U lazydb lazydb"
+
+[tasks."db:cqlsh"]
+description = "Open cqlsh against the fixture"
+run = "docker compose -f docker/compose.yaml exec cassandra cqlsh"

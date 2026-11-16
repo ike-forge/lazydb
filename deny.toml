@@ -4,7 +4,8 @@
 # the gate rather than slip in.
 allow = [
     "Apache-2.0",
-    # subtle 2.6.1, via the TLS stack.
+    # subtle 2.6.1, via the TLS stack; snap 1.1.2, the Snappy codec
+    # scylla-cql requires.
     "BSD-3-Clause",
     # rustls-webpki, untrusted and aws-lc-rs/-sys: the TLS stack.
     "ISC",
@@ -32,6 +33,12 @@ skip = [
     { crate = "syn@2.0.119", reason = "several proc-macro crates have not moved to syn 3" },
     { crate = "const-oid@0.9.6", reason = "tokio-postgres-rustls's x509-cert 0.2 lags postgres-protocol's digest 0.11" },
     { crate = "wasi@0.11.1", reason = "mio, under crossterm, lags tokio-postgres's whoami" },
+    { crate = "getrandom@0.3.4", reason = "scylla's rand 0.9 has not moved to getrandom 0.4" },
+    { crate = "r-efi@5.3.0", reason = "getrandom 0.3.4, under scylla's rand 0.9, pulls an older r-efi" },
+    { crate = "rand@0.9.5", reason = "scylla is on rand 0.9; tokio-postgres is on 0.10" },
+    { crate = "rand_core@0.9.5", reason = "follows scylla's rand 0.9" },
+    { crate = "hashbrown@0.14.5", reason = "dashmap 6.2, in scylla's tree, has not moved past hashbrown 0.14" },
+    { crate = "itertools@0.14.0", reason = "ratatui-core lags scylla's itertools 0.15" },
 ]
 
 [advisories]

@@ -10,9 +10,52 @@ services:
     ports:
       - "${LD_PG_PORT:-5433}:5432"
     volumes:
-      - ./seed:/docker-entrypoint-initdb.d:ro
+      - ./sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lazydb -d lazydb"]
       interval: 2s
       timeout: 2s
       retries: 30
+
+  cassandra:
+    image: cassandra:5.0.8
+    # `shop` has a materialized view, which ships disabled.
+    command:
+      - bash
+      - -c
+      - |
+        sed -i -e 's/^materialized_views_enabled: false/materialized_views_enabled: true/' \
+          /etc/cassandra/cassandra.yaml
+        exec docker-entrypoint.sh cassandra -f
+    environment:
+      CASSANDRA_CLUSTER_NAME: lazydb-fixture
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_RACK: rack1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      # Published to clients for their pool. The default is the bridge IP,
+      # which a VM-backed container runtime does not route from the host.
+      CASSANDRA_BROADCAST_RPC_ADDRESS: 127.0.0.1
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 256M
+    ports:
+      - "${LD_CASSANDRA_PORT:-9043}:9042"
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 40
+      start_period: 30s
+
+  cassandra-seed:
+    image: cassandra:5.0.8
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./cql:/fixture/cql:ro
+      - ./seed-cql.sh:/fixture/seed.sh:ro
+    entrypoint: ["bash", "/fixture/seed.sh"]
+    environment:
+      CQLSH_HOST: cassandra
+      CQLSH_PORT: "9042"
+    restart: "no"

@@ -18,7 +18,7 @@ use crate::theme::ThemeChoice;
 
 /// Driver types stop at the adapter.
 #[async_trait]
-pub trait Cluster: Send + Sync {
+pub trait Database: Send + Sync {
     /// The address arrives here: connections are chosen at runtime. The posture
     /// returned is the connection's own.
     async fn connect(
@@ -118,7 +118,7 @@ pub enum ExportError {
     #[error("could not write the file: {0}")]
     Io(String),
     #[error("the server stopped answering: {0}")]
-    Cluster(DbError),
+    Server(DbError),
     #[error(
         "the result is over the {} MB clipboard limit (export.clipboard_mb); export it to a file instead",
         .0.get()

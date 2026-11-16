@@ -13,7 +13,7 @@ use ld_domain::model::{
     ColumnDefault, ConnId, ConstraintKind, DbError, Page, RelationKind, RelationRef, Statement,
     StatementKind, Value,
 };
-use ld_domain::ports::Cluster;
+use ld_domain::ports::Database;
 use ld_domain::posture::Posture;
 use ld_outbound::postgres::Postgres;
 

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use ld_domain::config::PageSize;
 use ld_domain::export::{Destination, Encoder, Exported, Format};
 use ld_domain::model::{ConnId, JobId, Page, Statement};
-use ld_domain::ports::{Cluster, ExportError, Sink, Writer};
+use ld_domain::ports::{Database, ExportError, Sink, Writer};
 use ld_domain::{Msg, Source};
 use ld_outbound::buffer::Buffer;
 use tokio::sync::mpsc::UnboundedSender;
@@ -26,7 +26,7 @@ pub(crate) struct Job {
 
 pub(crate) fn spawn(
     tx: &UnboundedSender<Incoming>,
-    cluster: &Arc<dyn Cluster>,
+    cluster: &Arc<dyn Database>,
     writer: &Arc<dyn Writer>,
     job: Job,
 ) {
@@ -50,7 +50,7 @@ pub(crate) fn spawn(
 
 async fn run(
     tx: &UnboundedSender<Incoming>,
-    cluster: &dyn Cluster,
+    cluster: &dyn Database,
     writer: &dyn Writer,
     job: Job,
 ) -> Result<Exported, ExportError> {
@@ -84,7 +84,7 @@ async fn run(
 
 async fn write(
     tx: &UnboundedSender<Incoming>,
-    cluster: &dyn Cluster,
+    cluster: &dyn Database,
     sink: &mut dyn Sink,
     encoder: &mut Encoder,
     job: &Job,
@@ -110,7 +110,7 @@ async fn write(
 /// The header comes from the first page, which carries the columns.
 async fn pages(
     tx: &UnboundedSender<Incoming>,
-    cluster: &dyn Cluster,
+    cluster: &dyn Database,
     sink: &mut dyn Sink,
     encoder: &mut Encoder,
     job: &Job,
@@ -125,7 +125,7 @@ async fn pages(
         let page: Page = cluster
             .execute_paged(job.conn, statement, job.page_size, cursor.as_ref())
             .await
-            .map_err(ExportError::Cluster)?;
+            .map_err(ExportError::Server)?;
 
         if !started {
             sink.write(&encoder.start(&page.columns)).await?;

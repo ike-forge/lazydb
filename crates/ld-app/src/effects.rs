@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ld_domain::config::{ConnectionConfig, ConnectionName, DriverConfig};
 use ld_domain::model::{ConnId, DbError, Page, QueryId};
-use ld_domain::ports::{Cluster, ConfigSink, Store, Writer};
+use ld_domain::ports::{ConfigSink, Database, Store, Writer};
 use ld_domain::{Effect, Msg};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::AbortHandle;
@@ -36,7 +36,7 @@ impl Running {
 pub(crate) fn run(
     tx: &UnboundedSender<Incoming>,
     running: &Running,
-    cluster: &Arc<dyn Cluster>,
+    cluster: &Arc<dyn Database>,
     writer: &Arc<dyn Writer>,
     sink: &Arc<dyn ConfigSink>,
     store: &Arc<dyn Store>,
@@ -144,7 +144,7 @@ pub(crate) fn run(
 
 fn connect(
     tx: &UnboundedSender<Incoming>,
-    cluster: &Arc<dyn Cluster>,
+    cluster: &Arc<dyn Database>,
     conn: ConnId,
     target: ConnectionConfig,
     driver: DriverConfig,
@@ -167,7 +167,7 @@ fn connect(
     });
 }
 
-fn load_schema(tx: &UnboundedSender<Incoming>, cluster: &Arc<dyn Cluster>, conn: ConnId) {
+fn load_schema(tx: &UnboundedSender<Incoming>, cluster: &Arc<dyn Database>, conn: ConnId) {
     let (tx, cluster) = (tx.clone(), Arc::clone(cluster));
     tokio::spawn(async move {
         let started = std::time::Instant::now();

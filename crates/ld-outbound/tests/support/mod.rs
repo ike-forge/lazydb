@@ -15,7 +15,7 @@ use ld_domain::export::{Destination, Encoder, Exported, Format};
 use ld_domain::model::{
     Catalog, Column, ConnId, JobId, Key, KeyPress, Page, PrimaryKey, Schema, Statement, Table,
 };
-use ld_domain::ports::{Cluster, ExportError, Sink, Writer};
+use ld_domain::ports::{Database, ExportError, Sink, Writer};
 use ld_domain::posture::Posture;
 use ld_domain::{Effect, Msg, Source, State, update};
 use ld_outbound::buffer::Buffer;
@@ -78,13 +78,13 @@ pub(crate) fn connected_config() -> ld_domain::Config {
 }
 
 /// An `Effect::Export` here is a scenario bug: use [`run_with_writer`].
-pub(crate) async fn run(cluster: &dyn Cluster, state: &mut State, effects: Vec<Effect>) {
+pub(crate) async fn run(cluster: &dyn Database, state: &mut State, effects: Vec<Effect>) {
     run_with_writer(cluster, None, state, effects).await;
 }
 
 /// Returns what reached the clipboard.
 pub(crate) async fn run_with_writer(
-    cluster: &dyn Cluster,
+    cluster: &dyn Database,
     writer: Option<&dyn Writer>,
     state: &mut State,
     effects: Vec<Effect>,
@@ -203,7 +203,7 @@ struct Job {
 
 /// Mirrors `ld-app`'s `export::run`, which a library test cannot call. Keep the
 /// two in step by hand.
-async fn run_export(cluster: &dyn Cluster, writer: &dyn Writer, job: &Job) -> Vec<Msg> {
+async fn run_export(cluster: &dyn Database, writer: &dyn Writer, job: &Job) -> Vec<Msg> {
     let mut messages = Vec::new();
     let result = export(cluster, writer, job, &mut messages).await;
     messages.push(Msg::ExportFinished {
@@ -215,7 +215,7 @@ async fn run_export(cluster: &dyn Cluster, writer: &dyn Writer, job: &Job) -> Ve
 }
 
 async fn export(
-    cluster: &dyn Cluster,
+    cluster: &dyn Database,
     writer: &dyn Writer,
     job: &Job,
     messages: &mut Vec<Msg>,
@@ -247,7 +247,7 @@ async fn export(
 }
 
 async fn write(
-    cluster: &dyn Cluster,
+    cluster: &dyn Database,
     sink: &mut dyn Sink,
     encoder: &mut Encoder,
     job: &Job,
@@ -275,7 +275,7 @@ async fn write(
 }
 
 async fn pages(
-    cluster: &dyn Cluster,
+    cluster: &dyn Database,
     sink: &mut dyn Sink,
     encoder: &mut Encoder,
     job: &Job,
@@ -291,7 +291,7 @@ async fn pages(
         let page: Page = cluster
             .execute_paged(job.conn, statement, job.page_size, cursor.as_ref())
             .await
-            .map_err(ExportError::Cluster)?;
+            .map_err(ExportError::Server)?;
 
         if !started {
             sink.write(&encoder.start(&page.columns)).await?;

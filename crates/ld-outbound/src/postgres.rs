@@ -1,4 +1,4 @@
-//! The `Cluster` port over `tokio-postgres`.
+//! The `Database` port over `tokio-postgres`.
 //!
 //! Rows are read with the simple query protocol, so every value arrives as
 //! Postgres's own text rendering and no type needs a decoder of ours. Column
@@ -18,7 +18,7 @@ use ld_domain::connection::Transaction;
 use ld_domain::model::{
     Catalog, ConnId, DbError, Page, PagingState, Row, Statement, StatementKind, Value,
 };
-use ld_domain::ports::{Cluster, SecretResolver as _};
+use ld_domain::ports::{Database, SecretResolver as _};
 use ld_domain::posture::Posture;
 use tokio::sync::RwLock;
 use tokio_postgres::config::SslMode as DriverSslMode;
@@ -68,7 +68,7 @@ impl Postgres {
 }
 
 #[async_trait]
-impl Cluster for Postgres {
+impl Database for Postgres {
     async fn connect(
         &self,
         conn: ConnId,

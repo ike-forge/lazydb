@@ -1,4 +1,4 @@
-//! An in-memory `Cluster` with a scripted schema. Shipped, not test-only:
+//! An in-memory `Database` with a scripted schema. Shipped, not test-only:
 //! scenario tests drive sessions through it.
 
 use std::path::Path;
@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use ld_domain::config::PageSize;
 use ld_domain::connection::Transaction;
 use ld_domain::model::{Catalog, ConnId, DbError, Page, PagingState, Statement};
-use ld_domain::ports::{Cluster, ExportError, Sink, Writer};
+use ld_domain::ports::{Database, ExportError, Sink, Writer};
 use ld_domain::posture::Posture;
 
 #[derive(Debug, Default)]
@@ -120,7 +120,7 @@ impl FakeCluster {
 }
 
 #[async_trait]
-impl Cluster for FakeCluster {
+impl Database for FakeCluster {
     async fn connect(
         &self,
         _conn: ConnId,

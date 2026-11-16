@@ -14,7 +14,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use input::Incoming;
 use ld_domain::geometry::Geometry;
-use ld_domain::ports::{Cluster, ConfigSink, ConfigSource, Store, Writer};
+use ld_domain::ports::{ConfigSink, ConfigSource, Database, Store, Writer};
 use ld_domain::{Effect, Msg, State, update, view_model};
 use ld_inbound::{FrameMap, Rendered, Themes};
 use ratatui::DefaultTerminal;
@@ -143,7 +143,7 @@ async fn run(
     spawn_ticker(tx.clone());
 
     // Built empty: the target is chosen from the config default or the picker.
-    let cluster: Arc<dyn Cluster> = Arc::new(ld_outbound::postgres::Postgres::new());
+    let cluster: Arc<dyn Database> = Arc::new(ld_outbound::engines::Engines::new());
     let writer: Arc<dyn Writer> = Arc::new(ld_outbound::file::FileWriter);
 
     ld_outbound::config::write_example_config_from_env();

@@ -44,9 +44,18 @@ tokio = { version = "1.54.1", features = [
     "sync",
     "time",
 ] }
-# The driver. Default features only: rows are read as Postgres's own text
-# rendering (ld-outbound/src/postgres.rs), so no type-crate integrations.
+# The Postgres driver. Default features only: rows are read as Postgres's own
+# text rendering (ld-outbound/src/postgres.rs), so no type-crate integrations.
 tokio-postgres = "0.7.18"
+# The Cassandra driver. `bigdecimal-04` and `num-bigint-04` buy `From` for
+# `decimal` and `varint`; `rustls-023` takes the `ClientConfig` the adapter
+# builds itself.
+scylla = { version = "1.7.0", features = ["bigdecimal-04", "num-bigint-04", "rustls-023"] }
+bigdecimal = "0.4.9"
+num-bigint = "0.4.6"
+# In the tree through scylla; direct because the adapter formats timestamps
+# and dates.
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 tokio-postgres-rustls = { version = "0.14.0", features = ["aws-lc-rs"] }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 rustls-native-certs = "0.8.4"
