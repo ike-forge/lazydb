@@ -190,7 +190,7 @@ pub(super) fn connect(state: &mut State, target: ConnectionConfig) -> Vec<Effect
     let conn = ConnId::next();
     let mut effects = Vec::new();
 
-    if let Some(query) = state.contents.end_paging() {
+    if let Some(query) = state.contents.forget() {
         state.in_flight.remove(&query);
         effects.push(Effect::Cancel(query));
     }

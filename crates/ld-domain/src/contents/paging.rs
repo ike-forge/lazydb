@@ -221,6 +221,14 @@ impl ContentsPanel {
     }
 
     /// A paging cursor is only good on the session that issued it.
+    /// Empties the grid, with whatever was staged in it: another server's
+    /// rows would address the wrong one. Returns the read to cancel.
+    pub fn forget(&mut self) -> Option<QueryId> {
+        let outstanding = self.outstanding();
+        *self = Self::default();
+        outstanding
+    }
+
     pub fn end_paging(&mut self) -> Option<QueryId> {
         match std::mem::replace(self.paging_mut()?, Paging::Ended) {
             Paging::More { fetch, .. } => fetch.in_flight(),
@@ -403,6 +411,17 @@ mod tests {
             Paging::More { fetch, .. } => Some(*fetch),
             Paging::Ended => None,
         }
+    }
+
+    #[test]
+    fn forgetting_the_grid_empties_it_and_names_the_read_to_cancel() {
+        let (mut loading, query) = loading();
+        assert_eq!(loading.forget(), Some(query));
+        assert_eq!(loading.state(), &ContentsState::Empty);
+
+        let mut landed = pageable(3);
+        assert_eq!(landed.forget(), None);
+        assert_eq!(landed.row_count(), 0);
     }
 
     #[test]
