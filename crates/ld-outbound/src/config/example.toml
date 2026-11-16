@@ -72,9 +72,9 @@
 # LazyPg or LazyCassandra file reads unchanged. A key of the other engine
 # drops the entry rather than being ignored.
 
-# Postgres. Every key but `name` is optional. One left out falls back as psql's does:
-# its PG* variable (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD,
-# PGSSLMODE), then libpq's default. Without a password, ~/.pgpass (or
+# Postgres. Every key but `name` is optional. One left out falls back as
+# psql's does: its PG* variable (PGHOST, PGPORT, PGDATABASE, PGUSER,
+# PGPASSWORD, PGSSLMODE), then libpq's default. Without a password, ~/.pgpass (or
 # PGPASSFILE) is read, and ignored if group or others can read it.
 # [[connections]]
 # name        = "prod"                 # required; no whitespace

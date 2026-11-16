@@ -92,7 +92,13 @@ async fn catalog() -> ld_domain::model::Catalog {
 async fn the_catalog_lists_user_schemas_and_relations_of_every_kind() {
     let catalog = catalog().await;
 
-    let names: Vec<_> = catalog.schemas.keys().map(String::as_str).collect();
+    // The yank test adds a `yank_<pid>` schema while it runs.
+    let names: Vec<_> = catalog
+        .schemas
+        .keys()
+        .map(String::as_str)
+        .filter(|name| !name.starts_with("yank_"))
+        .collect();
     assert_eq!(names, ["Edge Cases", "public", "shop", "zoo"]);
 
     let kind = |schema: &str, table: &str| catalog.schemas[schema].tables[table].kind;

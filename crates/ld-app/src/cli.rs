@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub(crate) const USAGE: &str = "\
-lazydb — a terminal UI for PostgreSQL
+lazydb — a terminal UI for PostgreSQL and Cassandra
 
 Usage: lazydb [OPTIONS]
 

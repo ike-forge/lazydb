@@ -3,30 +3,34 @@
 Tool versions are pinned in [mise.toml](../mise.toml); `mise install`, then
 the tasks listed in [AGENTS.md](../AGENTS.md).
 
-## Fixture database
+## Fixtures
 
-`mise run db:up` starts Postgres on `localhost:5432` (`LD_PG_PORT` moves it),
-seeded from `docker/seed` on first start:
+`mise run db:up` starts both servers under the `lazydb` compose project and
+seeds them on first start:
 
-- `shop` — keys, composite primary key, foreign keys, indexes, a view
-- `zoo` — one column per type family the grid must render
-- `"Edge Cases"` — quoted and Unicode identifiers, a keyless table, a
-  materialized view, a partitioned table
-- a second database, `analytics`, with a `metrics` schema, for switching
+- **Postgres 18** on `localhost:5433` (`LD_PG_PORT` moves it), from
+  `docker/sql`: `shop` (keys, composite key, foreign keys, indexes, a view),
+  `zoo` (one column per type family), `"Edge Cases"` (quoted names, a keyless
+  table, a materialized view, a partitioned table), and a second database,
+  `analytics`, for switching.
+- **Cassandra 5.0** on `localhost:9043` (`LD_CASSANDRA_PORT`), from
+  `docker/cql` via `docker/seed-cql.sh`: `shop` (clustering order, indexes, a
+  materialized view, counters), `typezoo` (every type, static columns,
+  collections), `edge_cases`.
 
-`mise run db:psql` opens psql; `mise run db:down` drops the volume, so the
-next `db:up` re-seeds. [.lazydb.toml](../.lazydb.toml) points the app at it
-with writes enabled.
+`mise run db:psql` and `mise run db:cqlsh` open shells; `mise run db:down`
+drops the volumes, so the next `db:up` re-seeds.
+[.lazydb.toml](../.lazydb.toml) points the app at both (`local` and
+`cassandra`) with writes enabled.
 
-To exercise cancellation, run `SELECT pg_sleep(30);` and cancel it.
+`mise run test:it` runs the integration tier against them.
 
 ## Releasing
 
-Run the **Prepare release** workflow on `main` (default: next patch; pick
-`minor`/`major` or give an exact version such as `1.0.0-rc.1`). It requires a green CI run on that commit, bumps
-`[workspace.package] version`, tags `v<version>` and dispatches
-`release.yml`, which builds with cargo-dist and pushes `lazydb.rb` to
-`ike-forge/homebrew-tap` using the `HOMEBREW_TAP_TOKEN` secret.
+Run the **Prepare release** workflow on `main`. It requires a green CI run
+on that commit, bumps `[workspace.package] version`, tags `v<version>` and
+dispatches `release.yml`, which builds with cargo-dist and pushes `lazydb.rb`
+to `ike-forge/homebrew-tap` using the `HOMEBREW_TAP_TOKEN` secret.
 
 `release.yml` is generated: change `dist-workspace.toml`, then run
-`dist generate`. `dist plan` lists what a release would build.
+`dist generate`.

@@ -92,7 +92,7 @@ reader by inspection:
 - **Upstream defects** — a workaround for a driver, `ratatui`, or `tokio` bug.
   Name the project, the version, and the upstream issue, so the workaround can
   be deleted when it's fixed rather than outliving it.
-- **Protocol and Postgres semantics** — behaviour dictated by SQL, the wire
+- **Protocol and engine semantics** — behaviour dictated by SQL or CQL, the wire
   protocol, or the server, that the code must obey but cannot explain.
 - **Deliberate non-obvious choices** — the faster algorithm that looks wrong,
   the ordering that matters, the allocation that was measured.
@@ -177,7 +177,7 @@ world. In practice that means no:
 - **Wall-clock time.** Time enters the domain as `Msg::Tick`, and `update` is
   pure and synchronous (architecture.md §3) — a test supplies the tick it
   wants. Nothing in the domain calls `SystemTime::now()`.
-- **Network, filesystem, or real cluster.** The fake `Cluster` and the port
+- **Network, filesystem, or real cluster.** The fake `Database` and the port
   traits (architecture.md §5) exist for this; a test reaching a socket has
   escaped its tier.
 - **Unseeded randomness.** Seed it explicitly and record the seed in the
