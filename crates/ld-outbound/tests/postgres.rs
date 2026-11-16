@@ -87,14 +87,17 @@ async fn the_catalog_lists_user_schemas_and_relations_of_every_kind() {
         kind("Edge Cases", "no_pk_summary"),
         RelationKind::MaterializedView
     );
-    assert_eq!(kind("Edge Cases", "measurement"), RelationKind::Partitioned);
+    assert_eq!(
+        kind("Edge Cases", "measurement"),
+        RelationKind::Table,
+        "a partitioned table is a table"
+    );
 
     let edge = &catalog.schemas["Edge Cases"];
     assert!(
         !edge.tables.contains_key("measurement_2026"),
         "a partition is its parent's"
     );
-    assert_eq!(edge.tables["measurement"].partitions, ["measurement_2026"]);
     assert!(
         catalog.schemas["shop"].tables["customer_totals"]
             .definition
@@ -155,8 +158,6 @@ async fn columns_carry_type_nullability_and_default_in_table_order() {
         customer.columns[3].default,
         Some(ColumnDefault::Expression("now()".to_owned()))
     );
-    let edge = &catalog.schemas["Edge Cases"].tables["measurement"];
-    assert_eq!(edge.partition_key.as_deref(), Some("RANGE (logdate)"));
     assert_eq!(
         catalog.schemas["zoo"].tables["everything"].columns[7].data_type,
         "character varying(16)"
@@ -170,7 +171,7 @@ async fn keys_are_read_in_key_order_and_foreign_keys_from_both_ends() {
     let line = &shop.tables["order_line"];
 
     let key = line.primary_key.as_ref().expect("order_line has a key");
-    assert_eq!(key.columns, ["order_id", "line_no"]);
+    assert_eq!(key.names().collect::<Vec<_>>(), ["order_id", "line_no"]);
     assert!(
         catalog.schemas["Edge Cases"].tables["no_pk"]
             .primary_key
@@ -228,7 +229,7 @@ async fn indexes_and_constraints_are_read_as_postgres_renders_them() {
         .find(|index| index.name == "order_line_customer_idx")
         .expect("the seed creates it");
     assert_eq!(index.keys, ["customer_id"]);
-    assert_eq!(index.method, "btree");
+    assert_eq!(index.method.as_deref(), Some("btree"));
     assert!(!index.unique && !index.primary);
     assert!(
         index
@@ -248,21 +249,6 @@ async fn indexes_and_constraints_are_read_as_postgres_renders_them() {
             .constraints
             .iter()
             .any(|c| c.kind == ConstraintKind::Check && c.definition.contains("price >="))
-    );
-}
-
-#[tokio::test]
-async fn identity_sequences_are_owned_by_their_column() {
-    let catalog = catalog().await;
-
-    let sequences: Vec<_> = catalog.schemas["shop"]
-        .sequences
-        .iter()
-        .map(|s| (s.name.as_str(), s.data_type.as_str(), s.owned_by.as_deref()))
-        .collect();
-    assert_eq!(
-        sequences,
-        [("customer_id_seq", "bigint", Some("customer.id"))]
     );
 }
 

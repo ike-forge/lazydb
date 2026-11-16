@@ -28,10 +28,10 @@ pub(crate) fn table(name: &str) -> Table {
     Table {
         name: name.to_owned(),
         columns: vec![Column::new("id", "uuid")],
-        primary_key: Some(PrimaryKey {
-            name: format!("{name}_pkey"),
-            columns: vec!["id".to_owned()],
-        }),
+        primary_key: Some(PrimaryKey::plain(
+            &format!("{name}_pkey"),
+            &["id".to_owned()],
+        )),
         comment: Some(format!("The {name} table.")),
         ..Table::default()
     }
@@ -39,6 +39,7 @@ pub(crate) fn table(name: &str) -> Table {
 
 pub(crate) fn tabled_schema_of(schemas: &[(&str, &[&str])]) -> Catalog {
     Catalog {
+        engine: ld_domain::Engine::Postgres,
         server: None,
         schemas: schemas
             .iter()

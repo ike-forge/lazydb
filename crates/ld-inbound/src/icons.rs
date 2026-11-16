@@ -12,14 +12,10 @@ pub(crate) const DATABASE: &str = "\u{f1c0} ";
 pub(crate) const SCHEMA: &str = "\u{f084} ";
 /// The outline cut: a filled table reads as noise at one cell.
 pub(crate) const TABLE: &str = "\u{f0ce} ";
-/// A grid of grids: rows live in its partitions.
-pub(crate) const PARTITIONED: &str = "\u{f00a} ";
 /// What a view is: a way of looking.
 pub(crate) const VIEW: &str = "\u{f06e} ";
 /// Solid: unlike a view, it holds its rows.
 pub(crate) const MATERIALIZED_VIEW: &str = "\u{f1b2} ";
-/// The rows are on another server.
-pub(crate) const FOREIGN: &str = "\u{f0c1} ";
 /// Not the namespace's key: one glyph for two things would equate them.
 pub(crate) const KEY: &str = "\u{f030b} ";
 /// The outline cut: a filled cog is a blob at one cell.
@@ -34,10 +30,8 @@ pub(crate) const fn tree_row(kind: RowKind) -> &'static str {
         RowKind::Schema { .. } => SCHEMA,
         RowKind::Table { relation, .. } => match relation {
             RelationKind::Table => TABLE,
-            RelationKind::Partitioned => PARTITIONED,
             RelationKind::View => VIEW,
             RelationKind::MaterializedView => MATERIALIZED_VIEW,
-            RelationKind::Foreign => FOREIGN,
         },
     }
 }

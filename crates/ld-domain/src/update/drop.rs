@@ -36,9 +36,12 @@ pub(super) fn tree_target(state: &State) -> Option<Target> {
     match state.tables.selected(state.schema()?)? {
         // Not offered: dropping a database is not a tree gesture.
         Node::Database { .. } => None,
-        Node::Schema { namespace, .. } => Some(Target::Schema(namespace.name.clone())),
+        Node::Schema { namespace, .. } => Some(Target::Schema {
+            name: namespace.name.clone(),
+            kind: namespace.kind(),
+        }),
         Node::Table { namespace, table } => {
-            Some(Target::Table(TableRef::new(&namespace.name, &table.name)))
+            Some(Target::Table(TableRef::in_schema(namespace, &table.name)))
         }
     }
 }
@@ -228,7 +231,7 @@ pub(super) fn finish_drop(
         Severity::Info,
         match dropped.target() {
             Target::Rows { .. } => format!("deleted {}", dropped.target().qualified()),
-            Target::Schema(_) | Target::Table(_) => {
+            Target::Schema { .. } | Target::Table(_) => {
                 format!("dropped {}", dropped.target().qualified())
             }
         },
@@ -241,7 +244,7 @@ pub(super) fn finish_drop(
 
             submit_into_contents(state, Subject::Table(table), stmt)
         }
-        Target::Schema(_) | Target::Table(_) => {
+        Target::Schema { .. } | Target::Table(_) => {
             let Some(conn) = state.conn_id() else {
                 return Vec::new();
             };

@@ -1,12 +1,11 @@
 //! Introspection: [`ld_domain::introspection`]'s queries, run together over
 //! the session's pipeline, their rows into our [`Catalog`].
 
-use ld_domain::introspection::{
-    COLUMNS, CONSTRAINTS, FUNCTIONS, INDEXES, PARTITIONS, RELATIONS, SCHEMAS, SEQUENCES, SERVER,
-};
+use ld_domain::Engine;
+use ld_domain::introspection::{COLUMNS, CONSTRAINTS, INDEXES, RELATIONS, SCHEMAS, SERVER};
 use ld_domain::model::{
-    Catalog, Column, ColumnDefault, Constraint, ConstraintKind, DbError, ForeignKey, Function,
-    FunctionKind, Index, PrimaryKey, RelationKind, RelationRef, Schema, Sequence, Server, Table,
+    Catalog, Column, ColumnDefault, ColumnKind, Constraint, ConstraintKind, DbError, ForeignKey,
+    Index, PrimaryKey, RelationKind, RelationRef, Schema, Server, Table,
 };
 use tokio_postgres::{Client, Row};
 
@@ -17,35 +16,23 @@ pub(crate) async fn describe(client: &Client) -> Result<Catalog, DbError> {
             .await
             .map_err(|error| crate::postgres::db_error(&error))
     };
-    let (
-        server,
-        schemas,
-        relations,
-        columns,
-        constraints,
-        indexes,
-        partitions,
-        sequences,
-        functions,
-    ) = tokio::try_join!(
+    let (server, schemas, relations, columns, constraints, indexes) = tokio::try_join!(
         query(SERVER),
         query(SCHEMAS),
         query(RELATIONS),
         query(COLUMNS),
         query(CONSTRAINTS),
         query(INDEXES),
-        query(PARTITIONS),
-        query(SEQUENCES),
-        query(FUNCTIONS),
     )?;
 
     let mut catalog = Catalog {
+        engine: Engine::Postgres,
         server: server.first().map(server_of),
         schemas: schemas
             .iter()
             .map(|row| {
                 let name: String = row.get(0);
-                (name.clone(), Schema::empty(&name))
+                (name.clone(), Schema::new(Engine::Postgres, &name))
             })
             .collect(),
     };
@@ -60,7 +47,6 @@ pub(crate) async fn describe(client: &Client) -> Result<Catalog, DbError> {
             kind: relation_kind(&row.get::<_, String>(2)),
             comment: row.get(3),
             definition: row.get(4),
-            partition_key: row.get(5),
             ..Table::default()
         };
         schema.tables.insert(name, table);
@@ -79,6 +65,7 @@ pub(crate) async fn describe(client: &Client) -> Result<Catalog, DbError> {
                     &row.get::<_, String>(6),
                     row.get(7),
                 ),
+                kind: ColumnKind::Regular,
                 comment: row.get(8),
             });
         }
@@ -98,19 +85,11 @@ pub(crate) async fn describe(client: &Client) -> Result<Catalog, DbError> {
                 keys: row.get(4),
                 unique: row.get(5),
                 primary: row.get(6),
-                method: row.get(7),
+                method: Some(row.get(7)),
                 predicate: row.get(8),
             });
         }
     }
-
-    for row in &partitions {
-        if let Some(table) = tables.at(row) {
-            table.partitions.push(row.get(2));
-        }
-    }
-
-    schema_objects(&mut catalog, &sequences, &functions);
 
     Ok(catalog)
 }
@@ -124,29 +103,6 @@ fn server_of(row: &Row) -> Server {
         databases.sort();
     }
     Server { current, databases }
-}
-
-fn schema_objects(catalog: &mut Catalog, sequences: &[Row], functions: &[Row]) {
-    for row in sequences {
-        if let Some(schema) = catalog.schemas.get_mut(&row.get::<_, String>(0)) {
-            schema.sequences.push(Sequence {
-                name: row.get(1),
-                data_type: row.get(2),
-                owned_by: row.get(3),
-            });
-        }
-    }
-
-    for row in functions {
-        if let Some(schema) = catalog.schemas.get_mut(&row.get::<_, String>(0)) {
-            schema.functions.push(Function {
-                name: row.get(1),
-                kind: function_kind(&row.get::<_, String>(2)),
-                arguments: row.get(3),
-                result: row.get::<_, Option<String>>(4).unwrap_or_default(),
-            });
-        }
-    }
 }
 
 /// Rows lead with schema and relation name; a row for a relation not listed
@@ -170,7 +126,7 @@ fn constraint(table: &mut Table, row: &Row) {
 
     let kind = match row.get::<_, String>(3).as_str() {
         "p" => {
-            table.primary_key = Some(PrimaryKey { name, columns });
+            table.primary_key = Some(PrimaryKey::plain(&name, &columns));
             return;
         }
         "f" => {
@@ -218,20 +174,10 @@ fn column_default(
 
 fn relation_kind(code: &str) -> RelationKind {
     match code {
-        "p" => RelationKind::Partitioned,
         "v" => RelationKind::View,
         "m" => RelationKind::MaterializedView,
-        "f" => RelationKind::Foreign,
+        // Partitioned and foreign tables are tables to every panel.
         _ => RelationKind::Table,
-    }
-}
-
-fn function_kind(code: &str) -> FunctionKind {
-    match code {
-        "p" => FunctionKind::Procedure,
-        "a" => FunctionKind::Aggregate,
-        "w" => FunctionKind::Window,
-        _ => FunctionKind::Function,
     }
 }
 

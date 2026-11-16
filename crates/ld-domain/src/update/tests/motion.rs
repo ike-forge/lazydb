@@ -536,15 +536,13 @@ fn the_ddl_cursor_clamps_when_the_selected_table_shrinks() {
     let shrunk = crate::model::Table {
         name: "orders".to_owned(),
         columns: vec![Column::new("id", "uuid")],
-        primary_key: Some(PrimaryKey {
-            name: "orders_pkey".to_owned(),
-            columns: vec!["id".to_owned()],
-        }),
+        primary_key: Some(PrimaryKey::plain("orders_pkey", &["id".to_owned()])),
         ..crate::model::Table::default()
     };
     let mut shop = Schema::empty("shop");
     shop.tables.insert("orders".to_owned(), shrunk);
     let schema = Catalog {
+        engine: crate::Engine::Postgres,
         server: None,
         schemas: [("shop".to_owned(), shop)].into_iter().collect(),
     };

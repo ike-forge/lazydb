@@ -596,6 +596,7 @@ fn schema_with_email() -> Catalog {
         .and_then(|namespace| namespace.tables.get_mut("orders"))
     {
         table.columns.push(crate::model::Column {
+            kind: crate::model::ColumnKind::Regular,
             name: "email".to_owned(),
             data_type: "text".to_owned(),
             nullable: true,

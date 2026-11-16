@@ -169,7 +169,7 @@ impl State {
             .and_then(|catalog| catalog.schemas.get(&table.namespace))
             .and_then(|schema| schema.tables.get(&table.table))
             .and_then(|found| found.primary_key.as_ref())
-            .map(|key| key.columns.clone())
+            .map(|key| key.names().map(str::to_owned).collect::<Vec<_>>())
             .unwrap_or_default();
 
         Statement::select_all(&table.namespace, &table.table, &key)

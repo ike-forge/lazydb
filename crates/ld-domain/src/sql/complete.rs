@@ -534,6 +534,7 @@ mod tests {
 
     fn column(name: &str, data_type: &str) -> Column {
         Column {
+            kind: crate::model::ColumnKind::Regular,
             name: name.to_owned(),
             data_type: data_type.to_owned(),
             nullable: true,
@@ -584,13 +585,8 @@ mod tests {
                 .expect("fixture table");
 
             table.columns = columns.iter().map(|(name, ty)| column(name, ty)).collect();
-            table.primary_key = Some(PrimaryKey {
-                name: format!("{}_pkey", table.name),
-                columns: columns[..key]
-                    .iter()
-                    .map(|(name, _)| (*name).to_owned())
-                    .collect(),
-            });
+            let names: Vec<&str> = columns[..key].iter().map(|(name, _)| *name).collect();
+            table.primary_key = Some(PrimaryKey::plain(&format!("{}_pkey", table.name), &names));
         }
 
         schema

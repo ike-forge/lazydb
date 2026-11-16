@@ -470,7 +470,10 @@ fn index_rows(table: &Table, index: &Index) -> Vec<DetailRow> {
             .unwrap_or_default(),
     });
     let traits = [
-        Some(property("using", index.method.clone())),
+        index
+            .method
+            .as_ref()
+            .map(|method| property("using", method.clone())),
         index.unique.then(|| property("unique", "")),
         index
             .predicate
@@ -497,18 +500,6 @@ fn columns_of(schema: &Schema, table: &Table) -> Details {
         .comment
         .iter()
         .map(|comment| property("comment", comment.clone()))
-        .chain(
-            table
-                .partition_key
-                .iter()
-                .map(|key| property("partitioned by", key.clone())),
-        )
-        .chain(
-            table
-                .partitions
-                .iter()
-                .map(|partition| property("partition", partition.clone())),
-        )
         .collect();
 
     Details {
@@ -562,15 +553,9 @@ fn of_schema(schema: &Schema) -> Details {
             .count()
     };
     let contents = [
-        (
-            "tables",
-            count(RelationKind::Table) + count(RelationKind::Partitioned),
-        ),
+        ("tables", count(RelationKind::Table)),
         ("views", count(RelationKind::View)),
         ("materialized views", count(RelationKind::MaterializedView)),
-        ("foreign tables", count(RelationKind::Foreign)),
-        ("sequences", schema.sequences.len()),
-        ("functions", schema.functions.len()),
     ]
     .into_iter()
     // Tables always, so an empty schema says it is empty.
@@ -709,10 +694,10 @@ mod tests {
                 not_null("customer_id", "bigint"),
                 Column::new("note", "text"),
             ],
-            primary_key: Some(PrimaryKey {
-                name: "order_line_pkey".to_owned(),
-                columns: vec!["order_id".to_owned(), "line_no".to_owned()],
-            }),
+            primary_key: Some(PrimaryKey::plain(
+                "order_line_pkey",
+                &["order_id".to_owned(), "line_no".to_owned()],
+            )),
             foreign_keys: vec![ForeignKey {
                 name: "order_line_customer_id_fkey".to_owned(),
                 columns: vec!["customer_id".to_owned()],
@@ -728,7 +713,7 @@ mod tests {
                     keys: vec!["order_id".to_owned(), "line_no".to_owned()],
                     unique: true,
                     primary: true,
-                    method: "btree".to_owned(),
+                    method: Some("btree".to_owned()),
                     predicate: None,
                 },
                 Index {
@@ -737,7 +722,7 @@ mod tests {
                     keys: vec!["customer_id".to_owned(), "lower(note)".to_owned()],
                     unique: false,
                     primary: false,
-                    method: "btree".to_owned(),
+                    method: Some("btree".to_owned()),
                     predicate: Some("(note IS NOT NULL)".to_owned()),
                 },
             ],
@@ -755,10 +740,7 @@ mod tests {
         Table {
             name: "customer".to_owned(),
             columns: vec![not_null("id", "bigint")],
-            primary_key: Some(PrimaryKey {
-                name: "customer_pkey".to_owned(),
-                columns: vec!["id".to_owned()],
-            }),
+            primary_key: Some(PrimaryKey::plain("customer_pkey", &["id".to_owned()])),
             ..Table::default()
         }
     }
@@ -769,6 +751,7 @@ mod tests {
             shop.tables.insert(table.name.clone(), table);
         }
         Catalog {
+            engine: crate::Engine::Postgres,
             server: None,
             schemas: [("shop".to_owned(), shop)].into_iter().collect(),
         }
@@ -884,21 +867,6 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
             ["CREATE VIEW shop.totals AS", "  SELECT sum(1) AS total;"]
-        );
-    }
-
-    #[test]
-    fn a_partitioned_table_lists_its_partitions() {
-        let parent = Table {
-            name: "measurement".to_owned(),
-            kind: RelationKind::Partitioned,
-            partitions: vec!["measurement_2026".to_owned()],
-            ..Table::default()
-        };
-
-        assert_eq!(
-            section(&details(&browsing(parent)), "About").rows,
-            [property("partition", "measurement_2026")]
         );
     }
 

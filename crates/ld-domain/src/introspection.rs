@@ -28,12 +28,11 @@ pub const SCHEMAS: &str = concat!(
     user_schemas!("n")
 );
 
-/// Partitions are folded under their parent, so never listed themselves.
+/// Partitions are their parent's rows, so never listed themselves.
 pub const RELATIONS: &str = concat!(
     "SELECT n.nspname, c.relname, c.relkind::text,
             obj_description(c.oid, 'pg_class'),
-            CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid) END,
-            CASE WHEN c.relkind = 'p' THEN pg_get_partkeydef(c.oid) END
+            CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid) END
      FROM pg_class c
      JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition AND ",
@@ -99,59 +98,12 @@ pub const INDEXES: &str = concat!(
     " ORDER BY 1, 2, 3"
 );
 
-pub const PARTITIONS: &str = concat!(
-    "SELECT n.nspname, p.relname, c.relname
-     FROM pg_inherits h
-     JOIN pg_class c ON c.oid = h.inhrelid
-     JOIN pg_class p ON p.oid = h.inhparent
-     JOIN pg_namespace n ON n.oid = p.relnamespace
-     WHERE c.relispartition AND ",
-    user_schemas!("n"),
-    " ORDER BY 1, 2, 3"
-);
-
-/// The owner is the column a serial or identity column's sequence belongs to.
-pub const SEQUENCES: &str = concat!(
-    "SELECT n.nspname, c.relname, format_type(s.seqtypid, NULL),
-            (SELECT oc.relname || '.' || a.attname
-             FROM pg_depend d
-             JOIN pg_class oc ON oc.oid = d.refobjid
-             JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
-             WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
-               AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')
-             LIMIT 1)
-     FROM pg_sequence s
-     JOIN pg_class c ON c.oid = s.seqrelid
-     JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE ",
-    user_schemas!("n"),
-    " ORDER BY 1, 2"
-);
-
-/// An extension's functions are the extension's, not the schema's author's.
-pub const FUNCTIONS: &str = concat!(
-    "SELECT n.nspname, p.proname, p.prokind::text,
-            pg_get_function_identity_arguments(p.oid),
-            CASE WHEN p.prokind = 'p' THEN '' ELSE pg_get_function_result(p.oid) END
-     FROM pg_proc p
-     JOIN pg_namespace n ON n.oid = p.pronamespace
-     WHERE NOT EXISTS (SELECT 1 FROM pg_depend d
-                       WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid
-                         AND d.deptype = 'e')
-       AND ",
-    user_schemas!("n"),
-    " ORDER BY 1, 2, 4"
-);
-
 /// In the order they are sent, each with what it reads.
-pub const ALL: [(&str, &str); 9] = [
+pub const ALL: [(&str, &str); 6] = [
     ("databases", SERVER),
     ("schemas", SCHEMAS),
     ("relations", RELATIONS),
     ("columns", COLUMNS),
     ("constraints", CONSTRAINTS),
     ("indexes", INDEXES),
-    ("partitions", PARTITIONS),
-    ("sequences", SEQUENCES),
-    ("functions", FUNCTIONS),
 ];

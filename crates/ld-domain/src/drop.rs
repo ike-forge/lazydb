@@ -10,7 +10,10 @@ use crate::style::{Segment, Token};
 /// Only what a cursor can sit on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    Schema(String),
+    Schema {
+        name: String,
+        kind: SchemaKind,
+    },
     Table(TableRef),
     /// Never empty: the grid's cursor is always on a row.
     Rows {
@@ -49,14 +52,14 @@ impl Target {
     pub fn row_count(&self) -> Option<usize> {
         match self {
             Self::Rows { keys, .. } => Some(keys.len()),
-            Self::Schema(_) | Self::Table(_) => None,
+            Self::Schema { .. } | Self::Table(_) => None,
         }
     }
 
     #[must_use]
     pub fn statement(&self) -> Statement {
         match self {
-            Self::Schema(namespace) => Statement::drop_schema(namespace),
+            Self::Schema { name, .. } => Statement::drop_schema(name),
             Self::Table(table) => Statement::drop_table(&table.namespace, &table.table),
             Self::Rows { table, keys } => {
                 let pairs: Vec<Vec<(String, String)>> =
@@ -72,7 +75,7 @@ impl Target {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::Schema(namespace) => namespace,
+            Self::Schema { name, .. } => name,
             Self::Table(table) | Self::Rows { table, .. } => &table.table,
         }
     }
@@ -80,7 +83,7 @@ impl Target {
     #[must_use]
     pub fn qualified(&self) -> String {
         match self {
-            Self::Schema(namespace) => namespace.clone(),
+            Self::Schema { name, .. } => name.clone(),
             Self::Table(table) => table.qualified(),
             Self::Rows { table, keys } => {
                 format!(
@@ -96,8 +99,11 @@ impl Target {
     #[must_use]
     pub fn title(&self) -> Vec<Segment> {
         match self {
-            Self::Schema(namespace) => {
-                let token = match SchemaKind::of(namespace) {
+            Self::Schema {
+                name: namespace,
+                kind,
+            } => {
+                let token = match kind {
                     SchemaKind::System => Token::Faint,
                     SchemaKind::User => Token::Schema,
                 };
@@ -153,8 +159,8 @@ impl DropPrompt {
         // Read off the statement: `Protected` is about destructive statements,
         // and a row delete is a `Write`.
         let destructive = target.statement().kind.is_destructive();
-        let typed =
-            matches!(target, Target::Schema(_)) || (posture.requires_confirmation() && destructive);
+        let typed = matches!(target, Target::Schema { .. })
+            || (posture.requires_confirmation() && destructive);
         let answer = if typed {
             Answer::Typed(Line::default())
         } else {
@@ -218,7 +224,10 @@ mod tests {
     use crate::style;
 
     fn namespace() -> Target {
-        Target::Schema("shop".to_owned())
+        Target::Schema {
+            name: "shop".to_owned(),
+            kind: SchemaKind::User,
+        }
     }
 
     fn table() -> Target {
@@ -263,7 +272,13 @@ mod tests {
     #[test]
     fn a_name_is_matched_verbatim_rather_than_folded() {
         // The field asks for what the tree draws, not the folded name.
-        let mut prompt = DropPrompt::opened(Target::Schema("MyKs".to_owned()), Posture::Writable);
+        let mut prompt = DropPrompt::opened(
+            Target::Schema {
+                name: "MyKs".to_owned(),
+                kind: SchemaKind::User,
+            },
+            Posture::Writable,
+        );
         typing(&mut prompt, "myks");
 
         assert!(!prompt.confirmed());

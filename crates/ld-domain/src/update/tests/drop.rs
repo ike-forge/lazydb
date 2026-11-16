@@ -17,7 +17,13 @@ fn d_on_a_namespace_asks_for_its_name() {
     press(&mut state, Key::Char('d'));
 
     let prompt = dropping(&state).expect("the confirmation is up");
-    assert_eq!(prompt.target(), &Target::Schema("shop".to_owned()));
+    assert_eq!(
+        prompt.target(),
+        &Target::Schema {
+            name: "shop".to_owned(),
+            kind: crate::model::SchemaKind::User,
+        }
+    );
     assert!(prompt.takes_text(), "a namespace is always typed back");
 }
 

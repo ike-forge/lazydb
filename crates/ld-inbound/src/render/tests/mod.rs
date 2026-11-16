@@ -81,16 +81,17 @@ fn table(name: &str) -> Table {
     Table {
         name: name.to_owned(),
         columns: vec![column("id", "uuid")],
-        primary_key: Some(PrimaryKey {
-            name: format!("{name}_pkey"),
-            columns: vec!["id".to_owned()],
-        }),
+        primary_key: Some(PrimaryKey::plain(
+            &format!("{name}_pkey"),
+            &["id".to_owned()],
+        )),
         ..Table::default()
     }
 }
 
 fn column(name: &str, data_type: &str) -> Column {
     Column {
+        kind: ld_domain::model::ColumnKind::Regular,
         name: name.to_owned(),
         data_type: data_type.to_owned(),
         nullable: true,
@@ -105,6 +106,7 @@ fn schema_of(names: &[&str]) -> Catalog {
 
 fn tabled_schema(schemas: &[(&str, &[&str])]) -> Catalog {
     Catalog {
+        engine: ld_domain::Engine::Postgres,
         server: None,
         schemas: schemas
             .iter()
@@ -289,12 +291,10 @@ fn orders() -> Table {
             column("order_date", "date"),
             column("order_id", "bigint"),
         ],
-        primary_key: Some(PrimaryKey {
-            name: "orders_by_customer_pkey".to_owned(),
-            columns: ["customer_id", "order_date", "order_id"]
-                .map(str::to_owned)
-                .to_vec(),
-        }),
+        primary_key: Some(PrimaryKey::plain(
+            "orders_by_customer_pkey",
+            &["customer_id", "order_date", "order_id"],
+        )),
         foreign_keys: vec![ld_domain::model::ForeignKey {
             name: "orders_customer_id_fkey".to_owned(),
             columns: vec!["customer_id".to_owned()],
@@ -318,6 +318,7 @@ fn orders() -> Table {
 
 fn describing(table: Table) -> State {
     let schema = Catalog {
+        engine: ld_domain::Engine::Postgres,
         server: None,
         schemas: BTreeMap::from([(
             "shop".to_owned(),

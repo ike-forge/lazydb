@@ -378,7 +378,13 @@ mod tests {
     }
 
     fn namespace() -> DropPrompt {
-        DropPrompt::opened(Target::Schema("shop".to_owned()), Posture::Writable)
+        DropPrompt::opened(
+            Target::Schema {
+                name: "shop".to_owned(),
+                kind: ld_domain::model::SchemaKind::User,
+            },
+            Posture::Writable,
+        )
     }
 
     #[test]
@@ -458,10 +464,10 @@ mod tests {
         Table {
             name: "orders".to_owned(),
             columns: vec![Column::new("id", "uuid"), Column::new("placed", "date")],
-            primary_key: Some(PrimaryKey {
-                name: "orders_pkey".to_owned(),
-                columns: vec!["id".to_owned(), "placed".to_owned()],
-            }),
+            primary_key: Some(PrimaryKey::plain(
+                "orders_pkey",
+                &["id".to_owned(), "placed".to_owned()],
+            )),
             ..Table::default()
         }
     }

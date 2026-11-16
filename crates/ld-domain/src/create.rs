@@ -153,9 +153,7 @@ pub fn statements(schema: &Schema, table: &Table) -> Vec<String> {
     let mut lines = match table.kind {
         RelationKind::View => view("CREATE VIEW", &name, table),
         RelationKind::MaterializedView => view("CREATE MATERIALIZED VIEW", &name, table),
-        RelationKind::Table | RelationKind::Partitioned | RelationKind::Foreign => {
-            shell(&name, table)
-        }
+        RelationKind::Table => shell(&name, table),
     };
 
     let constraint_names: Vec<&str> = table
@@ -181,17 +179,6 @@ pub fn statements(schema: &Schema, table: &Table) -> Vec<String> {
         lines.extend(comments);
     }
 
-    if !table.partitions.is_empty() {
-        lines.push(String::new());
-        lines.push("-- Partitions; their bounds are on each partition:".to_owned());
-        lines.extend(
-            table
-                .partitions
-                .iter()
-                .map(|partition| format!("--   {}", qualified(&schema.name, partition))),
-        );
-    }
-
     lines
 }
 
@@ -209,18 +196,14 @@ fn view(verb: &str, name: &str, table: &Table) -> Vec<String> {
 }
 
 fn shell(name: &str, table: &Table) -> Vec<String> {
-    let verb = if table.kind == RelationKind::Foreign {
-        "CREATE FOREIGN TABLE"
-    } else {
-        "CREATE TABLE"
-    };
+    let verb = "CREATE TABLE";
 
     let mut items: Vec<String> = table.columns.iter().map(column).collect();
     if let Some(key) = &table.primary_key {
         items.push(format!(
             "CONSTRAINT {} PRIMARY KEY ({})",
-            ident(&key.name),
-            names(&key.columns)
+            ident(key.name.as_deref().unwrap_or_default()),
+            names(&key.names().map(str::to_owned).collect::<Vec<_>>())
         ));
     }
     items.extend(table.foreign_keys.iter().map(foreign_key));
@@ -242,17 +225,7 @@ fn shell(name: &str, table: &Table) -> Vec<String> {
         }
     }));
 
-    let mut close = ")".to_owned();
-    if let Some(key) = &table.partition_key {
-        let _ = write!(close, " PARTITION BY {key}");
-    }
-    if table.kind == RelationKind::Foreign {
-        lines.push(close);
-        lines.push("-- SERVER and OPTIONS are not read from the catalog.".to_owned());
-        return lines;
-    }
-    close.push(';');
-    lines.push(close);
+    lines.push(");".to_owned());
     lines
 }
 
@@ -289,8 +262,7 @@ fn comments(name: &str, table: &Table) -> Vec<String> {
     let object = match table.kind {
         RelationKind::View => "VIEW",
         RelationKind::MaterializedView => "MATERIALIZED VIEW",
-        RelationKind::Foreign => "FOREIGN TABLE",
-        RelationKind::Table | RelationKind::Partitioned => "TABLE",
+        RelationKind::Table => "TABLE",
     };
 
     table
@@ -337,10 +309,7 @@ mod tests {
                     ..Column::new("select", "text")
                 },
             ],
-            primary_key: Some(PrimaryKey {
-                name: "order_line_pkey".to_owned(),
-                columns: vec!["order_id".to_owned(), "line_no".to_owned()],
-            }),
+            primary_key: Some(PrimaryKey::plain("order_line_pkey", &["order_id", "line_no"])),
             foreign_keys: vec![ForeignKey {
                 name: "order_line_customer_id_fkey".to_owned(),
                 columns: vec!["customer_id".to_owned()],
@@ -359,7 +328,7 @@ mod tests {
                     keys: Vec::new(),
                     unique: true,
                     primary: true,
-                    method: "btree".to_owned(),
+                    method: Some("btree".to_owned()),
                     predicate: None,
                 },
                 Index {
@@ -368,7 +337,7 @@ mod tests {
                     keys: Vec::new(),
                     unique: true,
                     primary: false,
-                    method: "btree".to_owned(),
+                    method: Some("btree".to_owned()),
                     predicate: None,
                 },
                 Index {
@@ -377,7 +346,7 @@ mod tests {
                     keys: Vec::new(),
                     unique: false,
                     primary: false,
-                    method: "btree".to_owned(),
+                    method: Some("btree".to_owned()),
                     predicate: None,
                 },
             ],
@@ -420,30 +389,6 @@ mod tests {
                 "COMMENT ON COLUMN shop.order_line.\"select\" IS 'What the customer wrote.';",
             ],
             "the key's and the unique constraint's indexes come with them, so only the other is created"
-        );
-    }
-
-    #[test]
-    fn a_partitioned_table_states_its_key_and_lists_its_partitions() {
-        let table = Table {
-            name: "measurement".to_owned(),
-            kind: RelationKind::Partitioned,
-            columns: vec![not_null("logdate", "date")],
-            partition_key: Some("RANGE (logdate)".to_owned()),
-            partitions: vec!["measurement_2026".to_owned()],
-            ..Table::default()
-        };
-
-        assert_eq!(
-            statements(&Schema::empty("Edge Cases"), &table),
-            [
-                "CREATE TABLE \"Edge Cases\".measurement (",
-                "    logdate date NOT NULL",
-                ") PARTITION BY RANGE (logdate);",
-                "",
-                "-- Partitions; their bounds are on each partition:",
-                "--   \"Edge Cases\".measurement_2026",
-            ]
         );
     }
 

@@ -201,6 +201,7 @@ mod tests {
 
     fn column(name: &str, data_type: &str, default: Option<ColumnDefault>) -> crate::model::Column {
         crate::model::Column {
+            kind: crate::model::ColumnKind::Regular,
             name: name.to_owned(),
             data_type: data_type.to_owned(),
             nullable: true,

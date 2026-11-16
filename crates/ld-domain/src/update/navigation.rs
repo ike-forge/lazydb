@@ -161,7 +161,7 @@ pub(super) fn step_in(state: &mut State) -> Vec<Effect> {
             // Reading needs one table. Folding addresses the cursor's row, so
             // it is left alone.
             Some(Node::Table { .. }) if tables.selects_many() => return Vec::new(),
-            Some(Node::Table { namespace, table }) => TableRef::new(&namespace.name, &table.name),
+            Some(Node::Table { namespace, table }) => TableRef::in_schema(namespace, &table.name),
             Some(Node::Database {
                 name,
                 current: false,

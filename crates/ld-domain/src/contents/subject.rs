@@ -1,4 +1,4 @@
-use crate::model::SchemaKind;
+use crate::model::{Schema, SchemaKind};
 use crate::style::{Segment, Token};
 
 /// Owned: a result outlives the schema reload that dropped its table.
@@ -6,6 +6,8 @@ use crate::style::{Segment, Token};
 pub struct TableRef {
     pub namespace: String,
     pub table: String,
+    /// Carried: a result outlives the catalog that said so.
+    pub kind: SchemaKind,
 }
 
 impl TableRef {
@@ -14,6 +16,15 @@ impl TableRef {
         Self {
             namespace: namespace.to_owned(),
             table: table.to_owned(),
+            kind: SchemaKind::User,
+        }
+    }
+
+    #[must_use]
+    pub fn in_schema(schema: &Schema, table: &str) -> Self {
+        Self {
+            kind: schema.kind(),
+            ..Self::new(&schema.name, table)
         }
     }
 
@@ -25,7 +36,7 @@ impl TableRef {
     /// A system namespace is faint on both halves, as in the tree.
     #[must_use]
     pub fn segments(&self) -> Vec<Segment> {
-        let (namespace, table) = match SchemaKind::of(&self.namespace) {
+        let (namespace, table) = match self.kind {
             SchemaKind::System => (Token::Faint, Token::Faint),
             SchemaKind::User => (Token::Schema, Token::Table),
         };

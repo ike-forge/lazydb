@@ -15,6 +15,7 @@ pub mod ddl;
 pub mod drop;
 pub mod edit;
 pub mod editor;
+pub mod engine;
 pub mod export;
 pub mod feedback;
 pub mod geometry;
@@ -47,6 +48,7 @@ pub mod viewport;
 pub mod yank;
 
 pub use config::Config;
+pub use engine::Engine;
 pub use posture::Posture;
 pub use state::State;
 pub use theme::{BuiltIn, Ours, Ported, ThemeChoice};

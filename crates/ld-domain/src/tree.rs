@@ -318,10 +318,10 @@ pub(crate) mod tests_support {
                 Column::new("id", "uuid"),
                 Column::new("created_at", "timestamp"),
             ],
-            primary_key: Some(PrimaryKey {
-                name: format!("{name}_pkey"),
-                columns: vec!["id".to_owned(), "created_at".to_owned()],
-            }),
+            primary_key: Some(PrimaryKey::plain(
+                &format!("{name}_pkey"),
+                &["id".to_owned(), "created_at".to_owned()],
+            )),
             comment: Some("fixture".to_owned()),
             ..Table::default()
         }
@@ -329,6 +329,7 @@ pub(crate) mod tests_support {
 
     pub(crate) fn schema_of(schemas: &[(&str, &[&str])]) -> Catalog {
         Catalog {
+            engine: crate::Engine::Postgres,
             server: None,
             schemas: schemas
                 .iter()

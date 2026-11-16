@@ -436,12 +436,19 @@ fn grid_table(state: &State, subject: &Subject) -> Option<TableRef> {
         Subject::Typed(sql) => {
             let name = crate::sql::sole_table(sql)?;
 
+            let namespace = name
+                .namespace
+                .clone()
+                .or_else(|| state.visible_namespace())?;
+            let kind = state
+                .schema()
+                .map(|catalog| catalog.schema_kind(&namespace))
+                .unwrap_or_default();
+
             Some(TableRef {
-                namespace: name
-                    .namespace
-                    .clone()
-                    .or_else(|| state.visible_namespace())?,
+                namespace,
                 table: name.table.clone(),
+                kind,
             })
         }
     }
@@ -511,6 +518,7 @@ mod tests {
             .and_then(|namespace| namespace.tables.get_mut("orders"))
             .expect("the builder made it");
         orders.columns = vec![Column {
+            kind: crate::model::ColumnKind::Regular,
             name: "total".to_owned(),
             data_type: "int".to_owned(),
             nullable: true,
@@ -596,7 +604,10 @@ mod tests {
         let mut state = tabled(&[(namespace, &[table])]);
         state.contents.requested(
             QueryId::next(),
-            Subject::Table(TableRef::new(namespace, table)),
+            Subject::Table(TableRef {
+                kind: crate::model::SchemaKind::of(crate::Engine::Postgres, namespace),
+                ..TableRef::new(namespace, table)
+            }),
             crate::model::Statement::typed("SELECT * FROM shop.orders"),
         );
         state
@@ -747,10 +758,7 @@ mod tests {
             .get_mut("shop")
             .and_then(|namespace| namespace.tables.get_mut("orders"))
             .expect("the builder made it");
-        table.primary_key = Some(PrimaryKey {
-            name: "orders_pkey".to_owned(),
-            columns: vec!["id".to_owned()],
-        });
+        table.primary_key = Some(PrimaryKey::plain("orders_pkey", &["id".to_owned()]));
         table.foreign_keys = vec![ForeignKey {
             name: "orders_at_fkey".to_owned(),
             columns: vec!["at".to_owned()],
@@ -763,6 +771,7 @@ mod tests {
             on_delete: "NO ACTION".to_owned(),
         }];
         table.columns = vec![Column {
+            kind: crate::model::ColumnKind::Regular,
             name: "total".to_owned(),
             data_type: "int".to_owned(),
             nullable: true,
@@ -920,10 +929,7 @@ mod tests {
             .get_mut("shop")
             .and_then(|namespace| namespace.tables.get_mut("orders"))
             .expect("the builder made it");
-        table.primary_key = Some(PrimaryKey {
-            name: "orders_pkey".to_owned(),
-            columns: vec!["id".to_owned()],
-        });
+        table.primary_key = Some(PrimaryKey::plain("orders_pkey", &["id".to_owned()]));
         table.foreign_keys = vec![ForeignKey {
             name: "orders_at_fkey".to_owned(),
             columns: vec!["at".to_owned()],

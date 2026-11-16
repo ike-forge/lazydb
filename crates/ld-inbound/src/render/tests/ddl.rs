@@ -41,7 +41,7 @@ fn index(name: &str, keys: &[&str], method: &str, predicate: Option<&str>) -> In
         keys: keys.iter().map(|key| (*key).to_owned()).collect(),
         unique: false,
         primary: false,
-        method: method.to_owned(),
+        method: Some(method.to_owned()),
         predicate: predicate.map(str::to_owned),
     }
 }

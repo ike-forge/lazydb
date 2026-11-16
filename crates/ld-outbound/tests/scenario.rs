@@ -191,6 +191,7 @@ async fn pressing_enter_on_a_table_fills_the_contents_panel() {
         .and_then(|namespace| namespace.tables.get_mut("orders"))
         .expect("the fixture made it")
         .columns = vec![Column {
+        kind: ld_domain::model::ColumnKind::Regular,
         name: "email".to_owned(),
         data_type: "text".to_owned(),
         nullable: true,
@@ -400,7 +401,7 @@ async fn walking_the_ddl_strip_reaches_the_indexes_of_the_selected_table() {
         keys: vec!["id".to_owned()],
         unique: false,
         primary: false,
-        method: "btree".to_owned(),
+        method: Some("btree".to_owned()),
         predicate: None,
     }];
 

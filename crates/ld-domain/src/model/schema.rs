@@ -1,11 +1,14 @@
-//! One database's catalog: schemas, their relations, and what keys and
-//! references them, made structural so the panels never re-derive it
-//! (vision.md §2).
+//! One database's catalog in the vocabulary every engine shares: schemas
+//! (Cassandra's keyspaces), their relations, and what keys and references
+//! them, made structural so the panels never re-derive it (vision.md §2).
 
 use std::collections::BTreeMap;
 
+use crate::engine::Engine;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Catalog {
+    pub engine: Engine,
     /// Where this database sits. `None` for a catalog read on its own, which
     /// the tree roots at its schemas.
     pub server: Option<Server>,
@@ -14,7 +17,8 @@ pub struct Catalog {
 }
 
 /// The databases a session on this server could switch to. A session is
-/// scoped to one, so only `current` has schemas here.
+/// scoped to one, so only `current` has schemas here. `None` on an engine
+/// without databases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Server {
     pub current: String,
@@ -25,34 +29,36 @@ pub struct Server {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     pub name: String,
+    pub kind: SchemaKind,
     /// Every relation kind; [`Table::kind`] tells them apart.
     pub tables: BTreeMap<String, Table>,
-    pub sequences: Vec<Sequence>,
-    pub functions: Vec<Function>,
 }
 
 impl Schema {
     #[must_use]
-    pub fn empty(name: &str) -> Self {
+    pub fn new(engine: Engine, name: &str) -> Self {
         Self {
             name: name.to_owned(),
+            kind: SchemaKind::of(engine, name),
             tables: BTreeMap::new(),
-            sequences: Vec::new(),
-            functions: Vec::new(),
         }
+    }
+
+    /// A Postgres schema: what most fixtures are.
+    #[must_use]
+    pub fn empty(name: &str) -> Self {
+        Self::new(Engine::Postgres, name)
     }
 }
 
-/// `pg_class.relkind`, for the kinds that hold or present rows. Partitions are
-/// a [`Table`]'s `partitions`, not relations of their own.
+/// The kinds that hold or present rows, in every engine's terms. Postgres's
+/// partitioned and foreign tables are tables here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RelationKind {
     #[default]
     Table,
-    Partitioned,
     View,
     MaterializedView,
-    Foreign,
 }
 
 impl RelationKind {
@@ -60,10 +66,8 @@ impl RelationKind {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Table => "Table",
-            Self::Partitioned => "Partitioned table",
             Self::View => "View",
             Self::MaterializedView => "Materialized view",
-            Self::Foreign => "Foreign table",
         }
     }
 
@@ -71,44 +75,42 @@ impl RelationKind {
     /// triggers.
     #[must_use]
     pub const fn stores_rows(self) -> bool {
-        matches!(self, Self::Table | Self::Partitioned)
+        matches!(self, Self::Table)
     }
 }
 
-/// A relation of any [`RelationKind`]: the name Postgres's own docs and
-/// `\d` use loosely, and the one the panels already speak.
+/// A relation of any [`RelationKind`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Table {
     pub name: String,
     pub kind: RelationKind,
-    /// In `attnum` order: what `SELECT *` returns.
+    /// What `SELECT *` returns, in its order.
     pub columns: Vec<Column>,
     pub primary_key: Option<PrimaryKey>,
     /// Outgoing; the incoming ones are [`Catalog::referencing`].
     pub foreign_keys: Vec<ForeignKey>,
     pub indexes: Vec<Index>,
-    /// Check, unique and exclusion: the primary and foreign keys have their
-    /// own fields.
+    /// Check and unique: the primary and foreign keys have their own fields.
     pub constraints: Vec<Constraint>,
-    pub partitions: Vec<String>,
-    /// `pg_get_partkeydef`, e.g. `RANGE (logdate)`, for a partitioned table.
-    pub partition_key: Option<String>,
     pub comment: Option<String>,
-    /// A view's `SELECT`, as `pg_get_viewdef` renders it.
+    /// A view's `SELECT` as the server renders it; a Cassandra materialized
+    /// view's `SELECT … WHERE`.
     pub definition: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
-    /// As `format_type` renders it, e.g. `character varying(16)`.
+    /// As the server renders it, e.g. `character varying(16)` or
+    /// `frozen<list<text>>`.
     pub data_type: String,
     pub nullable: bool,
     pub default: Option<ColumnDefault>,
+    pub kind: ColumnKind,
     pub comment: Option<String>,
 }
 
-/// Three things Postgres stores in one place: a default, an identity, a
+/// Three things SQL stores in one place: a default, an identity, a
 /// generation expression. They are spelled differently in a `CREATE TABLE`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ColumnDefault {
@@ -133,6 +135,14 @@ impl ColumnDefault {
     }
 }
 
+/// `Static`: Cassandra's one value per partition, shared by its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColumnKind {
+    #[default]
+    Regular,
+    Static,
+}
+
 impl Column {
     #[must_use]
     pub fn new(name: &str, data_type: &str) -> Self {
@@ -141,16 +151,94 @@ impl Column {
             data_type: data_type.to_owned(),
             nullable: true,
             default: None,
+            kind: ColumnKind::Regular,
             comment: None,
         }
     }
 }
 
+/// The columns that identify a row. SQL's are [`KeyRole::Plain`]; Cassandra's
+/// split into the partition, which places a row, and clustering, which orders
+/// it within the partition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrimaryKey {
-    pub name: String,
+    /// The constraint's name; Cassandra's key has none.
+    pub name: Option<String>,
     /// In key order, which need not be column order. Never empty.
-    pub columns: Vec<String>,
+    pub columns: Vec<KeyColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyColumn {
+    pub name: String,
+    pub role: KeyRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRole {
+    Plain,
+    Partition,
+    Clustering(SortOrder),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortOrder {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+impl SortOrder {
+    #[must_use]
+    pub const fn keyword(self) -> &'static str {
+        match self {
+            Self::Ascending => "ASC",
+            Self::Descending => "DESC",
+        }
+    }
+}
+
+impl PrimaryKey {
+    /// A SQL key: every column [`KeyRole::Plain`].
+    #[must_use]
+    pub fn plain<S: AsRef<str>>(name: &str, columns: &[S]) -> Self {
+        Self {
+            name: Some(name.to_owned()),
+            columns: columns
+                .iter()
+                .map(|column| KeyColumn {
+                    name: column.as_ref().to_owned(),
+                    role: KeyRole::Plain,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.columns.iter().map(|column| column.name.as_str())
+    }
+
+    #[must_use]
+    pub fn role(&self, column: &str) -> Option<KeyRole> {
+        self.columns
+            .iter()
+            .find(|key| key.name == column)
+            .map(|key| key.role)
+    }
+
+    pub fn partition(&self) -> impl Iterator<Item = &str> {
+        self.columns
+            .iter()
+            .filter(|key| key.role == KeyRole::Partition)
+            .map(|key| key.name.as_str())
+    }
+
+    pub fn clustering(&self) -> impl Iterator<Item = (&str, SortOrder)> {
+        self.columns.iter().filter_map(|key| match key.role {
+            KeyRole::Clustering(order) => Some((key.name.as_str(), order)),
+            KeyRole::Plain | KeyRole::Partition => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,15 +263,19 @@ pub struct RelationRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Index {
     pub name: String,
-    /// `pg_get_indexdef`: the whole `CREATE INDEX`.
+    /// The whole `CREATE INDEX`, as the server renders it or the adapter
+    /// rebuilds it.
     pub definition: String,
-    /// Column names, or the expression text for an expression key.
+    /// Column names, or the expression text for an expression key, or a
+    /// Cassandra target such as `keys(tags)`.
     pub keys: Vec<String>,
     pub unique: bool,
     /// Backs the primary key.
     pub primary: bool,
-    /// `btree`, `gin`, …
-    pub method: String,
+    /// `btree`, `gin`, or a Cassandra custom index's class. `None` for the
+    /// engine's default.
+    pub method: Option<String>,
+    /// A partial index's `WHERE`.
     pub predicate: Option<String>,
 }
 
@@ -191,6 +283,7 @@ pub struct Index {
 pub enum ConstraintKind {
     Check,
     Unique,
+    /// Postgres's `EXCLUDE`.
     Exclusion,
 }
 
@@ -209,34 +302,8 @@ impl ConstraintKind {
 pub struct Constraint {
     pub name: String,
     pub kind: ConstraintKind,
-    /// `pg_get_constraintdef`, e.g. `CHECK ((price >= (0)::numeric))`.
+    /// As the server renders it, e.g. `CHECK ((price >= (0)::numeric))`.
     pub definition: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sequence {
-    pub name: String,
-    pub data_type: String,
-    /// `table.column`, for a serial or identity column's sequence.
-    pub owned_by: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FunctionKind {
-    Function,
-    Procedure,
-    Aggregate,
-    Window,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Function {
-    pub name: String,
-    pub kind: FunctionKind,
-    /// `pg_get_function_identity_arguments`: tells overloads apart.
-    pub arguments: String,
-    /// Empty for a procedure.
-    pub result: String,
 }
 
 impl Table {
@@ -253,15 +320,18 @@ impl Table {
     pub fn key_columns(&self) -> impl Iterator<Item = &Column> {
         self.primary_key
             .iter()
-            .flat_map(|key| key.columns.iter())
+            .flat_map(PrimaryKey::names)
             .filter_map(|name| self.column(name))
     }
 
     #[must_use]
+    pub fn key_role(&self, column: &str) -> Option<KeyRole> {
+        self.primary_key.as_ref()?.role(column)
+    }
+
+    #[must_use]
     pub fn is_key(&self, column: &str) -> bool {
-        self.primary_key
-            .as_ref()
-            .is_some_and(|key| key.columns.iter().any(|name| name == column))
+        self.key_role(column).is_some()
     }
 
     /// Whether `column` is among some foreign key's columns.
@@ -273,30 +343,33 @@ impl Table {
     }
 }
 
-/// Derived from the name, so an adapter cannot report a contradicting kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Derived from the engine and the name, so an adapter cannot report a
+/// contradicting kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum SchemaKind {
+    #[default]
     User,
     System,
 }
 
 impl SchemaKind {
-    /// `pg_catalog`, `information_schema` and the `pg_` reserved prefix, which
-    /// `CREATE SCHEMA` refuses to users.
+    /// Postgres: `information_schema` and the `pg_` reserved prefix, which
+    /// `CREATE SCHEMA` refuses to users. Cassandra: `system` and `system_*`;
+    /// the separator matters, `systematic` is a user's.
     #[must_use]
-    pub fn of(name: &str) -> Self {
-        if name == "information_schema" || name.starts_with("pg_") {
-            Self::System
-        } else {
-            Self::User
-        }
+    pub fn of(engine: Engine, name: &str) -> Self {
+        let system = match engine {
+            Engine::Postgres => name == "information_schema" || name.starts_with("pg_"),
+            Engine::Cassandra => name == "system" || name.starts_with("system_"),
+        };
+        if system { Self::System } else { Self::User }
     }
 }
 
 impl Schema {
     #[must_use]
-    pub fn kind(&self) -> SchemaKind {
-        SchemaKind::of(&self.name)
+    pub const fn kind(&self) -> SchemaKind {
+        self.kind
     }
 }
 
@@ -313,6 +386,14 @@ impl Catalog {
             .filter(|schema| schema.kind() == SchemaKind::System);
 
         user.chain(system)
+    }
+
+    /// `User` for a name this catalog does not hold.
+    #[must_use]
+    pub fn schema_kind(&self, name: &str) -> SchemaKind {
+        self.schemas
+            .get(name)
+            .map_or(SchemaKind::User, Schema::kind)
     }
 
     #[must_use]
@@ -364,10 +445,10 @@ mod tests {
                 Column::new("line_no", "integer"),
                 Column::new("customer_id", "bigint"),
             ],
-            primary_key: Some(PrimaryKey {
-                name: "order_line_pkey".to_owned(),
-                columns: vec!["line_no".to_owned(), "order_id".to_owned()],
-            }),
+            primary_key: Some(PrimaryKey::plain(
+                "order_line_pkey",
+                &["line_no", "order_id"],
+            )),
             foreign_keys: vec![ForeignKey {
                 name: "order_line_customer_id_fkey".to_owned(),
                 columns: vec!["customer_id".to_owned()],
@@ -447,11 +528,49 @@ mod tests {
 
     #[test]
     fn the_reserved_prefix_and_information_schema_are_the_systems() {
-        assert_eq!(SchemaKind::of("pg_catalog"), SchemaKind::System);
-        assert_eq!(SchemaKind::of("pg_toast"), SchemaKind::System);
-        assert_eq!(SchemaKind::of("information_schema"), SchemaKind::System);
-        assert_eq!(SchemaKind::of("public"), SchemaKind::User);
-        assert_eq!(SchemaKind::of("pgx"), SchemaKind::User);
+        let of = |name| SchemaKind::of(Engine::Postgres, name);
+        assert_eq!(of("pg_catalog"), SchemaKind::System);
+        assert_eq!(of("pg_toast"), SchemaKind::System);
+        assert_eq!(of("information_schema"), SchemaKind::System);
+        assert_eq!(of("public"), SchemaKind::User);
+        assert_eq!(of("pgx"), SchemaKind::User);
+        assert_eq!(
+            of("system"),
+            SchemaKind::User,
+            "a Postgres user may name one so"
+        );
+    }
+
+    #[test]
+    fn the_clusters_own_keyspaces_are_system_and_the_system_prefixed_ones() {
+        let of = |name| SchemaKind::of(Engine::Cassandra, name);
+        assert_eq!(of("system"), SchemaKind::System);
+        assert_eq!(of("system_schema"), SchemaKind::System);
+        assert_eq!(of("systematic"), SchemaKind::User);
+        assert_eq!(of("pg_catalog"), SchemaKind::User);
+    }
+
+    #[test]
+    fn a_cassandra_key_tells_partition_from_clustering() {
+        let key = PrimaryKey {
+            name: None,
+            columns: vec![
+                KeyColumn {
+                    name: "device".to_owned(),
+                    role: KeyRole::Partition,
+                },
+                KeyColumn {
+                    name: "at".to_owned(),
+                    role: KeyRole::Clustering(SortOrder::Descending),
+                },
+            ],
+        };
+        assert_eq!(key.partition().collect::<Vec<_>>(), ["device"]);
+        assert_eq!(
+            key.clustering().collect::<Vec<_>>(),
+            [("at", SortOrder::Descending)]
+        );
+        assert_eq!(key.names().collect::<Vec<_>>(), ["device", "at"]);
     }
 
     #[test]
