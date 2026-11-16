@@ -11,7 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ld_domain::config::{ConnectionConfig, DriverConfig, PageSize, SslMode};
+use ld_domain::config::{
+    ConnectionConfig, DriverConfig, PageSize, PostgresTarget, SslMode, Target,
+};
 use ld_domain::connection::Transaction;
 use ld_domain::model::{
     Catalog, ConnId, DbError, Page, PagingState, Row, Statement, StatementKind, Value,
@@ -70,9 +72,15 @@ impl Cluster for Postgres {
     async fn connect(
         &self,
         conn: ConnId,
-        target: &ConnectionConfig,
+        entry: &ConnectionConfig,
         driver: &DriverConfig,
     ) -> Result<Posture, DbError> {
+        let Target::Postgres(target) = &entry.target else {
+            return Err(DbError::Unreachable(format!(
+                "{} is not a Postgres connection",
+                entry.name.as_str()
+            )));
+        };
         let resolved = Resolved::of(target, |key| std::env::var(key).ok());
         let mut config = tokio_postgres::Config::new();
         config
@@ -107,7 +115,7 @@ impl Cluster for Postgres {
 
         // The server-side rail (architecture.md §4): a statement the domain
         // misclassifies is still refused.
-        if target.posture == Posture::ReadOnly {
+        if entry.posture == Posture::ReadOnly {
             config.options("-c default_transaction_read_only=on");
         }
 
@@ -120,7 +128,7 @@ impl Cluster for Postgres {
                     DriverSslMode::Require
                 });
                 Some(MakeRustlsConnect::new(
-                    (*tls::client_config(mode, target).await?).clone(),
+                    (*tls::client_config(&tls::postgres(mode, target)).await?).clone(),
                 ))
             }
         };
@@ -152,7 +160,7 @@ impl Cluster for Postgres {
         };
         self.open.write().await.insert(conn, Arc::new(open));
 
-        Ok(target.posture)
+        Ok(entry.posture)
     }
 
     async fn describe(&self, conn: ConnId) -> Result<Catalog, DbError> {
@@ -234,7 +242,7 @@ struct Resolved {
 }
 
 impl Resolved {
-    fn of(target: &ConnectionConfig, env: impl Fn(&str) -> Option<String>) -> Self {
+    fn of(target: &PostgresTarget, env: impl Fn(&str) -> Option<String>) -> Self {
         let user = target
             .user
             .clone()
@@ -468,8 +476,6 @@ pub(crate) fn db_error(error: &tokio_postgres::Error) -> DbError {
 
 #[cfg(test)]
 mod tests {
-    use ld_domain::config::ConnectionName;
-
     use super::*;
 
     fn read(sql: &str) -> Statement {
@@ -487,8 +493,8 @@ mod tests {
         }
     }
 
-    fn named() -> ConnectionConfig {
-        ConnectionConfig::named(ConnectionName::try_new("t").unwrap())
+    fn named() -> PostgresTarget {
+        PostgresTarget::default()
     }
 
     #[test]
@@ -530,7 +536,7 @@ mod tests {
 
     #[test]
     fn a_stated_field_outranks_the_environment() {
-        let stated = ConnectionConfig {
+        let stated = PostgresTarget {
             host: Some("stated".to_owned()),
             port: NonZeroU16::new(7000),
             user: Some("u".to_owned()),

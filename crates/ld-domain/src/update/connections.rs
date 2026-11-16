@@ -171,17 +171,16 @@ pub(super) fn switch_database(state: &mut State, database: &str) -> Vec<Effect> 
     let ConnectionState::Connected(connection) = &state.connection else {
         return Vec::new();
     };
-    let Some(mut target) = state
+    let Some(target) = state
         .config
         .connections
         .iter()
         .find(|entry| entry.name == connection.name)
-        .cloned()
+        .and_then(|entry| entry.on_database(database))
     else {
         return Vec::new();
     };
 
-    target.database = Some(database.to_owned());
     connect(state, target)
 }
 

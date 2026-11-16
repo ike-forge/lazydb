@@ -5,7 +5,8 @@
 use std::time::{Duration, Instant};
 
 use ld_domain::config::{
-    ConnectionConfig, ConnectionName, Credential, DriverConfig, Millis, PageSize, SslMode,
+    ConnectionConfig, ConnectionName, Credential, DriverConfig, Millis, PageSize, PostgresTarget,
+    SslMode, Target,
 };
 use ld_domain::connection::Transaction;
 use ld_domain::model::{
@@ -27,14 +28,27 @@ fn conn() -> ConnId {
     reason = "allow-unwrap-in-tests only covers #[test]-attributed items, not helpers they call"
 )]
 fn target(posture: Posture) -> ConnectionConfig {
-    let port = std::env::var("LD_PG_PORT").unwrap_or_else(|_| "5432".to_owned());
-    ConnectionConfig {
+    fixture(posture, |_| {})
+}
+
+#[allow(
+    clippy::unwrap_used,
+    reason = "allow-unwrap-in-tests only covers #[test]-attributed items, not helpers they call"
+)]
+fn fixture(posture: Posture, edit: impl FnOnce(&mut PostgresTarget)) -> ConnectionConfig {
+    let port = std::env::var("LD_PG_PORT").unwrap_or_else(|_| "5433".to_owned());
+    let mut target = PostgresTarget {
         host: Some("127.0.0.1".to_owned()),
         port: Some(port.parse().unwrap()),
         user: Some("lazydb".to_owned()),
         password: Some(Credential::Literal("lazydb".to_owned())),
         sslmode: Some(SslMode::Disable),
+        ..PostgresTarget::default()
+    };
+    edit(&mut target);
+    ConnectionConfig {
         posture,
+        target: Target::Postgres(target),
         ..ConnectionConfig::named(ConnectionName::try_new("fixture").unwrap())
     }
 }
@@ -125,10 +139,9 @@ async fn the_catalog_places_itself_on_a_server_of_connectable_databases() {
 #[tokio::test]
 async fn a_connection_naming_another_database_reads_that_one() {
     let db = Postgres::new();
-    let target = ConnectionConfig {
-        database: Some("analytics".to_owned()),
-        ..target(Posture::ReadOnly)
-    };
+    let target = fixture(Posture::ReadOnly, |target| {
+        target.database = Some("analytics".to_owned());
+    });
     db.connect(conn(), &target, &DriverConfig::default())
         .await
         .expect("analytics accepts the fixture user");
@@ -347,8 +360,9 @@ async fn a_read_only_connection_is_refused_writes_by_the_server() {
 
 #[tokio::test]
 async fn a_wrong_password_is_an_authentication_failure() {
-    let mut target = target(Posture::ReadOnly);
-    target.password = Some(Credential::Literal("wrong".to_owned()));
+    let target = fixture(Posture::ReadOnly, |target| {
+        target.password = Some(Credential::Literal("wrong".to_owned()));
+    });
 
     let result = Postgres::new()
         .connect(conn(), &target, &DriverConfig::default())

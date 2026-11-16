@@ -2,7 +2,7 @@
 //! switching to another database.
 
 use super::*;
-use crate::config::ConnectionConfig;
+use crate::config::{ConnectionConfig, PostgresTarget, Target};
 use crate::model::Server;
 
 fn on_server(current: &str) -> Catalog {
@@ -21,7 +21,10 @@ fn on_server(current: &str) -> Catalog {
 fn serving(current: &str) -> State {
     let mut state = connected(Posture::Writable);
     state.config.connections = vec![ConnectionConfig {
-        host: Some("db".to_owned()),
+        target: Target::Postgres(PostgresTarget {
+            host: Some("db".to_owned()),
+            ..PostgresTarget::default()
+        }),
         posture: Posture::Writable,
         ..ConnectionConfig::named(ConnectionName::try_new("local").expect("a valid name"))
     }];
@@ -113,6 +116,9 @@ fn opening_another_database_reconnects_the_same_entry_to_it() {
         "a fresh id, so the old session's late results drop"
     );
     assert_eq!(target.name.as_str(), "local");
+    let Target::Postgres(target) = &target.target else {
+        panic!("a Postgres entry stays one");
+    };
     assert_eq!(target.database.as_deref(), Some("analytics"));
     assert_eq!(
         target.host.as_deref(),
@@ -135,7 +141,8 @@ fn l_on_another_database_switches_as_enter_does() {
 
     assert!(matches!(
         effects.as_slice(),
-        [Effect::Connect { target, .. }] if target.database.as_deref() == Some("postgres")
+        [Effect::Connect { target, .. }]
+            if matches!(&target.target, Target::Postgres(pg) if pg.database.as_deref() == Some("postgres"))
     ));
 }
 

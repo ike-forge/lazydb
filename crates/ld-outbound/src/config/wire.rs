@@ -105,6 +105,9 @@ impl Layer {
             at(connection.port.as_mut(), source, origin);
             at(connection.sslmode.as_mut(), source, origin);
             at(connection.url.as_mut(), source, origin);
+            at(connection.engine.as_mut(), source, origin);
+            at(connection.discovery.as_mut(), source, origin);
+            at(connection.consistency.as_mut(), source, origin);
         }
         for theme in &mut self.themes {
             theme.name.locate(source, origin);
@@ -166,9 +169,12 @@ pub(crate) struct ExportLayer {
     pub(crate) unknown: Unknown,
 }
 
+/// Both engines' keys: which apply is decided by `engine`, or by the keys
+/// stated when it is not.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ConnectionLayer {
     pub(crate) name: Located<String>,
+    pub(crate) engine: Option<Located<String>>,
     /// `postgresql://…`, or a JDBC URL; replaces the keys it can carry.
     pub(crate) url: Option<Located<String>>,
     pub(crate) host: Option<String>,
@@ -181,6 +187,33 @@ pub(crate) struct ConnectionLayer {
     pub(crate) sslrootcert: Option<String>,
     pub(crate) sslcert: Option<String>,
     pub(crate) sslkey: Option<String>,
+    pub(crate) hosts: Option<Vec<String>>,
+    pub(crate) discovery: Option<Located<String>>,
+    pub(crate) datacenter: Option<String>,
+    /// `LazyCassandra`'s spelling of `user`.
+    pub(crate) username: Option<String>,
+    pub(crate) cqlshrc: Option<String>,
+    pub(crate) tls: Option<TlsLayer>,
+    pub(crate) consistency: Option<Located<String>>,
+    #[serde(flatten)]
+    pub(crate) unknown: Unknown,
+}
+
+/// Plain `String`s: a span cannot survive serde's untagged buffering.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum TlsLayer {
+    Switch(bool),
+    Table(TlsTable),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TlsTable {
+    pub(crate) ca: Option<String>,
+    pub(crate) cert: Option<String>,
+    pub(crate) key: Option<String>,
+    pub(crate) verify: Option<String>,
+    pub(crate) server_name: Option<String>,
     #[serde(flatten)]
     pub(crate) unknown: Unknown,
 }

@@ -98,6 +98,9 @@ fn unknown_keys(layer: &Layer, origin: &Origin) -> Vec<Diagnostic> {
     }
     for connection in &layer.connections {
         report("connections.", &connection.unknown);
+        if let Some(wire::TlsLayer::Table(tls)) = &connection.tls {
+            report("connections.tls.", &tls.unknown);
+        }
     }
     for theme in &layer.themes {
         report("themes.", &theme.unknown);
@@ -523,7 +526,7 @@ mod repo_config {
             .find(|c| c.name == *default)
             .expect("and the name it gives resolves to an entry");
 
-        assert_eq!(connection.address(), "127.0.0.1:5432/lazydb");
+        assert_eq!(connection.address(), "127.0.0.1:5433/lazydb");
         assert_eq!(
             connection.posture,
             Posture::Writable,

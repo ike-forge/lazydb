@@ -4,11 +4,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use ld_domain::Engine;
 use ld_domain::config::{
-    Background, CatalogQueries, ClientIdentity, ClipboardMb, Config, ConnectionConfig,
-    ConnectionName, Credential, CustomTheme, Diagnostic, DriverConfig, ExportConfig, GridConfig,
-    HistoryConfig, HistoryLimit, Icons, LogConfig, MaxColumnWidth, Millis, Mouse, Origin,
-    OutOfRange, PageRows, PageSize, PanelRatios, Rgb, Span, SslMode, Trust,
+    Background, CassandraTarget, CatalogQueries, ClientIdentity, ClipboardMb, Config,
+    ConnectionConfig, ConnectionName, Consistency, Credential, Credentials, CustomTheme,
+    Diagnostic, Discovery, DriverConfig, ExportConfig, GridConfig, HistoryConfig, HistoryLimit,
+    Icons, LogConfig, MaxColumnWidth, Millis, Mouse, Origin, OutOfRange, PageRows, PageSize,
+    PanelRatios, PostgresTarget, Rgb, Span, SslMode, Target, Tls, TlsSettings, Trust, Verification,
 };
 use ld_domain::posture::Posture;
 use ld_domain::style::Severity;
@@ -17,7 +19,7 @@ use ld_domain::theme::{BuiltIn, Ours, Role, ThemeChoice, ThemeName};
 use super::url::{self, Url};
 use super::wire::{
     ConnectionLayer, CredentialLayer, CredentialSource, DriverLayer, ExportLayer, GridLayer,
-    HistoryLayer, Layer, LayoutLayer, Located, ThemeLayer,
+    HistoryLayer, Layer, LayoutLayer, Located, ThemeLayer, TlsLayer, TlsTable,
 };
 
 /// Each diagnostic takes its origin from the value that failed, so it names the
@@ -406,14 +408,125 @@ fn connections(layers: Vec<ConnectionLayer>, report: &mut Report) -> Vec<Connect
 
 type Refusal = (Option<(Origin, Span)>, String);
 
+const POSTGRES_ONLY: &[&str] = &[
+    "url",
+    "host",
+    "port",
+    "database",
+    "sslmode",
+    "sslrootcert",
+    "sslcert",
+    "sslkey",
+];
+const CASSANDRA_ONLY: &[&str] = &[
+    "hosts",
+    "discovery",
+    "datacenter",
+    "username",
+    "cqlshrc",
+    "tls",
+    "consistency",
+];
+
+fn stated_keys(layer: &ConnectionLayer) -> Vec<&'static str> {
+    [
+        ("url", layer.url.is_some()),
+        ("host", layer.host.is_some()),
+        ("port", layer.port.is_some()),
+        ("database", layer.database.is_some()),
+        ("sslmode", layer.sslmode.is_some()),
+        ("sslrootcert", layer.sslrootcert.is_some()),
+        ("sslcert", layer.sslcert.is_some()),
+        ("sslkey", layer.sslkey.is_some()),
+        ("hosts", layer.hosts.is_some()),
+        ("discovery", layer.discovery.is_some()),
+        ("datacenter", layer.datacenter.is_some()),
+        ("username", layer.username.is_some()),
+        ("cqlshrc", layer.cqlshrc.is_some()),
+        ("tls", layer.tls.is_some()),
+        ("consistency", layer.consistency.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(key, stated)| stated.then_some(key))
+    .collect()
+}
+
+/// Unstated, the keys decide: a `LazyCassandra` entry names `hosts`, a `LazyPg`
+/// one never does, so both kinds of file read unchanged.
+fn engine(layer: &ConnectionLayer) -> Result<Engine, Refusal> {
+    let Some(located) = &layer.engine else {
+        let cassandra = stated_keys(layer)
+            .iter()
+            .any(|key| CASSANDRA_ONLY.contains(key));
+        return Ok(if cassandra {
+            Engine::Cassandra
+        } else {
+            Engine::Postgres
+        });
+    };
+    Engine::ALL
+        .into_iter()
+        .find(|engine| engine.key() == located.value)
+        .ok_or_else(|| {
+            let known: Vec<_> = Engine::ALL.iter().map(|engine| engine.key()).collect();
+            (
+                located.at.clone(),
+                format!("engine `{}` unknown — {}", located.value, known.join(" | ")),
+            )
+        })
+}
+
 fn connection(
     name: ConnectionName,
     posture: Posture,
     layer: ConnectionLayer,
     report: &mut Report,
 ) -> Result<ConnectionConfig, Refusal> {
-    let mut config = ConnectionConfig::named(name);
-    config.posture = posture;
+    let engine = engine(&layer)?;
+    let foreign = match engine {
+        Engine::Postgres => CASSANDRA_ONLY,
+        Engine::Cassandra => POSTGRES_ONLY,
+    };
+    let misplaced: Vec<_> = stated_keys(&layer)
+        .into_iter()
+        .filter(|key| foreign.contains(key))
+        .collect();
+    if !misplaced.is_empty() {
+        return Err((
+            layer.name.at.clone(),
+            format!(
+                "{} not {} key{}; this is a {} connection",
+                misplaced.join(", "),
+                if misplaced.len() == 1 { "is" } else { "are" },
+                if misplaced.len() == 1 { "" } else { "s" },
+                engine.label()
+            ),
+        ));
+    }
+
+    let target = match engine {
+        Engine::Postgres => Target::Postgres(postgres(layer, report)?),
+        Engine::Cassandra => Target::Cassandra(cassandra(layer)?),
+    };
+    Ok(ConnectionConfig {
+        name,
+        posture,
+        target,
+    })
+}
+
+fn password(layer: Option<CredentialLayer>) -> Option<Credential> {
+    layer.map(|credential| match credential {
+        CredentialLayer::Literal(value) => Credential::Literal(value),
+        CredentialLayer::Reference(CredentialSource::Env(name)) => Credential::Env(name),
+        CredentialLayer::Reference(CredentialSource::File(path)) => {
+            Credential::File(PathBuf::from(path))
+        }
+    })
+}
+
+fn postgres(layer: ConnectionLayer, report: &mut Report) -> Result<PostgresTarget, Refusal> {
+    let mut config = PostgresTarget::default();
     let refuse = |at: &Located<String>, reason: String| (at.at.clone(), reason);
     let unlocated = |reason: String| (None, reason);
 
@@ -482,19 +595,164 @@ fn connection(
     };
     config.database = layer.database;
     config.user = layer.user;
-    config.password = layer.password.map(|credential| match credential {
-        CredentialLayer::Literal(value) => Credential::Literal(value),
-        CredentialLayer::Reference(CredentialSource::Env(name)) => Credential::Env(name),
-        CredentialLayer::Reference(CredentialSource::File(path)) => {
-            Credential::File(PathBuf::from(path))
-        }
-    });
+    config.password = password(layer.password);
     config.sslmode = layer
         .sslmode
         .map(|mode| ssl_mode(&mode.value).map_err(|reason| refuse(&mode, reason)))
         .transpose()?;
 
     tls(config, layer.sslrootcert, layer.sslcert, layer.sslkey).map_err(unlocated)
+}
+
+fn cassandra(layer: ConnectionLayer) -> Result<CassandraTarget, Refusal> {
+    let at = layer.name.at.clone();
+    let refuse = |reason: String| (at.clone(), reason);
+
+    let Some(hosts) = layer.hosts.filter(|hosts| !hosts.is_empty()) else {
+        return Err(refuse("hosts required and non-empty".to_owned()));
+    };
+
+    let discovery = match layer.discovery {
+        None => Discovery::default(),
+        Some(located) => match located.value.as_str() {
+            "cluster" => Discovery::Cluster,
+            "contact-points" => Discovery::ContactPoints,
+            other => return Err((located.at, format!("discovery `{other}` unknown"))),
+        },
+    };
+    if discovery == Discovery::ContactPoints && hosts.len() != 1 {
+        return Err(refuse(format!(
+            "discovery `contact-points` reaches exactly one host, {} stated",
+            hosts.len()
+        )));
+    }
+
+    let consistency = match layer.consistency {
+        None => Consistency::default(),
+        Some(located) => {
+            // The kebab spelling, or cqlsh's: `local-quorum` and `LOCAL_QUORUM`.
+            let spelled = located.value.replace('-', "_");
+            Consistency::ALL
+                .into_iter()
+                .find(|level| level.label().eq_ignore_ascii_case(&spelled))
+                .ok_or_else(|| {
+                    (
+                        located.at.clone(),
+                        format!(
+                            "consistency `{}` unknown — any | one | two | three | quorum | all | local-quorum | each-quorum | local-one | serial | local-serial",
+                            located.value
+                        ),
+                    )
+                })?
+        }
+    };
+
+    let user = match (layer.user, layer.username) {
+        (Some(_), Some(_)) => {
+            return Err(refuse(
+                "`user` and `username` are one key; state one".to_owned(),
+            ));
+        }
+        (user, username) => user.or(username),
+    };
+    let credentials = credentials(layer.cqlshrc, user, password(layer.password))
+        .map_err(|reason| refuse(reason.to_owned()))?;
+    let tls = connection_tls(layer.tls, credentials.as_ref())
+        .map_err(|reason| refuse(format!("tls: {reason}")))?;
+
+    Ok(CassandraTarget {
+        hosts,
+        discovery,
+        datacenter: layer.datacenter,
+        credentials,
+        tls,
+        consistency,
+    })
+}
+
+/// `tls` beside a `cqlshrc` overrides it.
+fn connection_tls(
+    layer: Option<TlsLayer>,
+    credentials: Option<&Credentials>,
+) -> Result<Tls, String> {
+    layer.map_or_else(
+        || {
+            Ok(match credentials {
+                Some(Credentials::Cqlshrc(path)) => Tls::Cqlshrc(path.clone()),
+                _ => Tls::Off,
+            })
+        },
+        cassandra_tls,
+    )
+}
+
+fn cassandra_tls(layer: TlsLayer) -> Result<Tls, String> {
+    let table = match layer {
+        TlsLayer::Switch(false) => return Ok(Tls::Off),
+        TlsLayer::Switch(true) => return Ok(Tls::On(TlsSettings::default())),
+        TlsLayer::Table(table) => table,
+    };
+    let TlsTable {
+        ca,
+        cert,
+        key,
+        verify,
+        server_name,
+        unknown: _,
+    } = table;
+
+    let identity = match (cert, key) {
+        (None, None) => None,
+        (Some(cert), Some(key)) => Some(ClientIdentity {
+            cert: PathBuf::from(cert),
+            key: PathBuf::from(key),
+        }),
+        _ => return Err("`cert` and `key` are stated together or not at all".to_owned()),
+    };
+
+    let verification = match (verify.as_deref(), server_name) {
+        (None | Some("full"), None) => Verification::Full,
+        (None | Some("full"), Some(name)) => Verification::Named(name),
+        (Some("chain"), None) => Verification::ChainOnly,
+        (Some("none"), None) => Verification::Off,
+        (Some("chain" | "none"), Some(_)) => {
+            return Err("`server_name` names what `verify = \"full\"` checks".to_owned());
+        }
+        (Some(other), _) => {
+            return Err(format!("verify `{other}` unknown — full | chain | none"));
+        }
+    };
+
+    Ok(Tls::On(TlsSettings {
+        trust: ca.map_or(Trust::System, |path| Trust::CaFile(PathBuf::from(path))),
+        identity,
+        verification,
+    }))
+}
+
+/// `cqlshrc` supplies both halves, so anything beside it is refused rather than
+/// merged.
+fn credentials(
+    cqlshrc: Option<String>,
+    user: Option<String>,
+    password: Option<Credential>,
+) -> Result<Option<Credentials>, &'static str> {
+    match (cqlshrc, user, password) {
+        (None, None, None) => Ok(None),
+        (None, Some(username), Some(password)) => {
+            Ok(Some(Credentials::Stated { username, password }))
+        }
+        (Some(path), None, None) => Ok(Some(Credentials::Cqlshrc(PathBuf::from(path)))),
+        (Some(_), _, _) => {
+            Err("`cqlshrc` supplies the user and the password, so neither is stated beside it")
+        }
+        (None, Some(_), None) => {
+            Err("user stated without a password — a cluster is sent both or neither")
+        }
+        (None, None, Some(_)) => {
+            Err("password stated without a user — a cluster is sent both or neither")
+        }
+    }
 }
 
 fn ssl_mode(word: &str) -> Result<SslMode, String> {
@@ -508,11 +766,11 @@ fn ssl_mode(word: &str) -> Result<SslMode, String> {
 }
 
 fn tls(
-    mut config: ConnectionConfig,
+    mut config: PostgresTarget,
     rootcert: Option<String>,
     cert: Option<String>,
     key: Option<String>,
-) -> Result<ConnectionConfig, String> {
+) -> Result<PostgresTarget, String> {
     config.identity = match (cert, key) {
         (None, None) => None,
         (Some(cert), Some(key)) => Some(ClientIdentity {
@@ -821,6 +1079,20 @@ mod tests {
         assert_eq!(malformed_hex.severity, Severity::Danger);
     }
 
+    fn pg(connection: &ConnectionConfig) -> &PostgresTarget {
+        match &connection.target {
+            Target::Postgres(target) => target,
+            Target::Cassandra(_) => panic!("{} is a Cassandra entry", connection.name.as_str()),
+        }
+    }
+
+    fn cassandra(connection: &ConnectionConfig) -> &CassandraTarget {
+        match &connection.target {
+            Target::Cassandra(target) => target,
+            Target::Postgres(_) => panic!("{} is a Postgres entry", connection.name.as_str()),
+        }
+    }
+
     #[test]
     fn a_password_is_read_as_a_literal_or_as_a_reference() {
         let (config, _) = config_of(&["[[connections]]\nname = \"a\"\npassword = \"hunter2\"\n\
@@ -828,15 +1100,16 @@ mod tests {
              [[connections]]\nname = \"c\"\n"]);
 
         assert_eq!(
-            config.connections[0].password,
+            pg(&config.connections[0]).password,
             Some(Credential::Literal("hunter2".to_owned()))
         );
         assert_eq!(
-            config.connections[1].password,
+            pg(&config.connections[1]).password,
             Some(Credential::Env("DEV_PW".to_owned()))
         );
         assert_eq!(
-            config.connections[2].password, None,
+            pg(&config.connections[2]).password,
+            None,
             "left to PGPASSWORD and the passfile"
         );
     }
@@ -860,8 +1133,8 @@ mod tests {
              sslcert = \"/c.pem\"\nsslkey = \"/k.pem\"\n"]);
 
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        let prod = &config.connections[0];
-        assert_eq!(prod.address(), "db:6543/orders");
+        assert_eq!(config.connections[0].address(), "db:6543/orders");
+        let prod = pg(&config.connections[0]);
         assert_eq!(prod.user.as_deref(), Some("ana"));
         assert_eq!(prod.sslmode, Some(SslMode::VerifyFull));
         assert_eq!(prod.trust, Trust::CaFile(PathBuf::from("/ca.pem")));
@@ -906,8 +1179,8 @@ mod tests {
         let (config, diagnostics) = config_of(&["[[connections]]\nname = \"app\"\n\
              url = \"jdbc:postgresql://db:5433/orders?user=svc&password=pw&sslmode=require&ssl=true\"\n"]);
 
-        let app = &config.connections[0];
-        assert_eq!(app.address(), "db:5433/orders");
+        assert_eq!(config.connections[0].address(), "db:5433/orders");
+        let app = pg(&config.connections[0]);
         assert_eq!(app.user.as_deref(), Some("svc"));
         assert_eq!(app.password, Some(Credential::Literal("pw".to_owned())));
         assert_eq!(app.sslmode, Some(SslMode::Require));
@@ -924,5 +1197,133 @@ mod tests {
         assert_eq!(unset.log.catalog, CatalogQueries::Hidden);
         assert_eq!(shown.log.catalog, CatalogQueries::Shown);
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn a_lazycassandra_entry_is_read_as_cassandra_without_an_engine_key() {
+        let (config, diagnostics) = config_of(&["[[connections]]\nname = \"dev\"\n\
+             hosts = [\"127.0.0.1:9042\"]\ndatacenter = \"dc1\"\n\
+             username = \"u\"\npassword = \"p\"\nconsistency = \"local-one\"\n"]);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let dev = &config.connections[0];
+        assert_eq!(dev.engine(), Engine::Cassandra);
+        let dev = cassandra(dev);
+        assert_eq!(dev.hosts, ["127.0.0.1:9042"]);
+        assert_eq!(dev.datacenter.as_deref(), Some("dc1"));
+        assert_eq!(dev.consistency, Consistency::LocalOne);
+        assert_eq!(
+            dev.credentials,
+            Some(Credentials::Stated {
+                username: "u".to_owned(),
+                password: Credential::Literal("p".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn an_engine_stated_outright_is_kept_and_an_unknown_one_drops_the_entry() {
+        let (config, _) = config_of(&["[[connections]]\nname = \"pg\"\nengine = \"postgres\"\n\
+             [[connections]]\nname = \"cass\"\nengine = \"cassandra\"\nhosts = [\"h:9042\"]\n"]);
+        let engines: Vec<_> = config
+            .connections
+            .iter()
+            .map(ConnectionConfig::engine)
+            .collect();
+        assert_eq!(engines, [Engine::Postgres, Engine::Cassandra]);
+
+        refused("engine = \"oracle\"", "engine");
+    }
+
+    #[test]
+    fn a_key_of_the_other_engine_drops_the_entry_rather_than_being_ignored() {
+        refused("engine = \"postgres\"\nhosts = [\"h:9042\"]", "hosts");
+        refused("hosts = [\"h:9042\"]\nsslmode = \"require\"", "sslmode");
+        refused("engine = \"cassandra\"", "hosts required");
+    }
+
+    #[test]
+    fn discovery_is_read_per_connection_and_defaults_to_cluster() {
+        let (config, diagnostics) =
+            config_of(
+                &["[[connections]]\nname = \"direct\"\nhosts = [\"a:9042\"]\n\
+             [[connections]]\nname = \"tunnelled\"\nhosts = [\"127.0.0.1:9042\"]\n\
+             discovery = \"contact-points\"\n"],
+            );
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            cassandra(&config.connections[0]).discovery,
+            Discovery::Cluster
+        );
+        assert_eq!(
+            cassandra(&config.connections[1]).discovery,
+            Discovery::ContactPoints
+        );
+    }
+
+    #[test]
+    fn a_cassandra_entry_that_contradicts_itself_is_dropped_and_says_why() {
+        let hosts = "hosts = [\"h:9042\"]\n";
+        refused(&format!("{hosts}discovery = \"single\""), "discovery");
+        refused(
+            "hosts = [\"a:9043\", \"b:9044\"]\ndiscovery = \"contact-points\"",
+            "one host",
+        );
+        refused(&format!("{hosts}username = \"u\""), "password");
+        refused(&format!("{hosts}password = \"p\""), "user");
+        refused(
+            &format!("{hosts}user = \"u\"\nusername = \"u\"\npassword = \"p\""),
+            "username",
+        );
+        refused(&format!("{hosts}consistency = \"most\""), "consistency");
+        refused(
+            &format!("{hosts}cqlshrc = \"rc\"\nuser = \"u\"\npassword = \"p\""),
+            "cqlshrc",
+        );
+        for tls in [
+            "tls = { cert = \"c.pem\" }",
+            "tls = { verify = \"chain\", server_name = \"x\" }",
+            "tls = { verify = \"sometimes\" }",
+        ] {
+            refused(&format!("{hosts}{tls}"), "tls");
+        }
+    }
+
+    #[test]
+    fn a_tls_table_states_the_ca_the_identity_and_the_verification() {
+        let (config, diagnostics) =
+            config_of(&["[[connections]]\nname = \"prod\"\nhosts = [\"h:9042\"]\n\
+             tls = { ca = \"ca.pem\", cert = \"c.pem\", key = \"k.pem\", verify = \"chain\" }\n"]);
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            cassandra(&config.connections[0]).tls,
+            Tls::On(TlsSettings {
+                trust: Trust::CaFile(PathBuf::from("ca.pem")),
+                identity: Some(ClientIdentity {
+                    cert: PathBuf::from("c.pem"),
+                    key: PathBuf::from("k.pem"),
+                }),
+                verification: Verification::ChainOnly,
+            })
+        );
+    }
+
+    #[test]
+    fn a_cqlshrc_is_the_whole_pair_and_carries_its_tls_unless_tls_is_stated() {
+        let (config, _) = config_of(&["[[connections]]\nname = \"prod\"\n\
+             hosts = [\"h:9042\"]\ncqlshrc = \"rc\"\n"]);
+        let prod = cassandra(&config.connections[0]);
+        assert_eq!(
+            prod.credentials,
+            Some(Credentials::Cqlshrc(PathBuf::from("rc")))
+        );
+        assert_eq!(prod.tls, Tls::Cqlshrc(PathBuf::from("rc")));
+
+        let (config, diagnostics) = config_of(&["[[connections]]\nname = \"prod\"\n\
+             hosts = [\"h:9042\"]\ncqlshrc = \"rc\"\ntls = false\n"]);
+        assert!(diagnostics.is_empty());
+        assert_eq!(cassandra(&config.connections[0]).tls, Tls::Off);
     }
 }

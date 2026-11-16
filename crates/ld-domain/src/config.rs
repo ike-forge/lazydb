@@ -6,6 +6,7 @@ use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::engine::Engine;
 use crate::posture::Posture;
 use crate::style::Severity;
 use crate::theme::{Role, ThemeChoice, ThemeName};
@@ -295,55 +296,236 @@ pub struct ClientIdentity {
     pub key: PathBuf,
 }
 
-/// An unstated field falls back as libpq's does — its `PG*` variable, then
-/// libpq's default — resolved in `ld-outbound` at connect time, so the
-/// environment of the moment applies. Absent `database` is the user's name.
+/// One `[[connections]]` entry: what every engine shares, and where to find
+/// the server in that engine's own terms.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionConfig {
     pub name: ConnectionName,
+    pub posture: Posture,
+    pub target: Target,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Postgres(PostgresTarget),
+    Cassandra(CassandraTarget),
+}
+
+/// An unstated field falls back as libpq's does — its `PG*` variable, then
+/// libpq's default — resolved in `ld-outbound` at connect time, so the
+/// environment of the moment applies. Absent `database` is the user's name.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PostgresTarget {
     pub host: Option<String>,
     pub port: Option<NonZeroU16>,
     pub database: Option<String>,
     pub user: Option<String>,
     /// Unstated: `PGPASSWORD`, then the passfile.
     pub password: Option<Credential>,
-    pub posture: Posture,
     pub sslmode: Option<SslMode>,
     pub trust: Trust,
     pub identity: Option<ClientIdentity>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CassandraTarget {
+    /// `host:port`, never empty.
+    pub hosts: Vec<String>,
+    pub discovery: Discovery,
+    pub datacenter: Option<String>,
+    pub credentials: Option<Credentials>,
+    pub tls: Tls,
+    /// Every request's: there is no transaction to scope one to.
+    pub consistency: Consistency,
+}
+
+impl CassandraTarget {
+    #[must_use]
+    pub fn at(hosts: &[&str]) -> Self {
+        Self {
+            hosts: hosts.iter().map(|host| (*host).to_owned()).collect(),
+            discovery: Discovery::default(),
+            datacenter: None,
+            credentials: None,
+            tls: Tls::default(),
+            consistency: Consistency::default(),
+        }
+    }
+}
+
 impl ConnectionConfig {
-    /// Every field libpq defaults is unstated: the connection a bare
-    /// `psql` would make.
+    /// A Postgres connection with every field libpq defaults unstated: the
+    /// connection a bare `psql` would make.
     #[must_use]
     pub fn named(name: ConnectionName) -> Self {
         Self {
             name,
-            host: None,
-            port: None,
-            database: None,
-            user: None,
-            password: None,
             posture: Posture::default(),
-            sslmode: None,
-            trust: Trust::System,
-            identity: None,
+            target: Target::Postgres(PostgresTarget::default()),
         }
     }
 
-    /// `host:port/database`, with what was not stated left out.
+    #[must_use]
+    pub const fn engine(&self) -> Engine {
+        match self.target {
+            Target::Postgres(_) => Engine::Postgres,
+            Target::Cassandra(_) => Engine::Cassandra,
+        }
+    }
+
+    /// Postgres: `host:port/database`, with what was not stated left out.
+    /// Cassandra: the contact points.
     #[must_use]
     pub fn address(&self) -> String {
-        let mut address = self.host.clone().unwrap_or_else(|| "localhost".to_owned());
-        if let Some(port) = self.port {
-            address = format!("{address}:{port}");
+        match &self.target {
+            Target::Postgres(target) => {
+                let mut address = target
+                    .host
+                    .clone()
+                    .unwrap_or_else(|| "localhost".to_owned());
+                if let Some(port) = target.port {
+                    address = format!("{address}:{port}");
+                }
+                if let Some(database) = &target.database {
+                    address = format!("{address}/{database}");
+                }
+                address
+            }
+            Target::Cassandra(target) => target.hosts.join(", "),
         }
-        if let Some(database) = &self.database {
-            address = format!("{address}/{database}");
-        }
-        address
     }
+
+    /// The same server, reading `database` instead. `None` where the engine
+    /// has no databases to switch between.
+    #[must_use]
+    pub fn on_database(&self, database: &str) -> Option<Self> {
+        let Target::Postgres(target) = &self.target else {
+            return None;
+        };
+        Some(Self {
+            target: Target::Postgres(PostgresTarget {
+                database: Some(database.to_owned()),
+                ..target.clone()
+            }),
+            ..self.clone()
+        })
+    }
+}
+
+/// The consistency level of a Cassandra request. `Serial` and `LocalSerial`
+/// here are a Paxos read, not the serial level a conditional write commits at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Consistency {
+    Any,
+    One,
+    Two,
+    Three,
+    Quorum,
+    All,
+    #[default]
+    LocalQuorum,
+    EachQuorum,
+    LocalOne,
+    Serial,
+    LocalSerial,
+}
+
+impl Consistency {
+    pub const ALL: [Self; 11] = [
+        Self::Any,
+        Self::One,
+        Self::LocalOne,
+        Self::Two,
+        Self::Three,
+        Self::Quorum,
+        Self::LocalQuorum,
+        Self::EachQuorum,
+        Self::All,
+        Self::Serial,
+        Self::LocalSerial,
+    ];
+
+    /// Cassandra's spelling: cqlsh's `CONSISTENCY` takes it, error messages
+    /// use it, and the config accepts it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Any => "ANY",
+            Self::One => "ONE",
+            Self::Two => "TWO",
+            Self::Three => "THREE",
+            Self::Quorum => "QUORUM",
+            Self::All => "ALL",
+            Self::LocalQuorum => "LOCAL_QUORUM",
+            Self::EachQuorum => "EACH_QUORUM",
+            Self::LocalOne => "LOCAL_ONE",
+            Self::Serial => "SERIAL",
+            Self::LocalSerial => "LOCAL_SERIAL",
+        }
+    }
+}
+
+/// `system.peers` reports raw addresses, so behind a tunnel every peer but the
+/// tunnelled one is unreachable. `ContactPoints` uses only the stated hosts and
+/// gives up token-aware routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Discovery {
+    #[default]
+    Cluster,
+    ContactPoints,
+}
+
+impl Discovery {
+    /// The one spelling a config file uses.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cluster => "cluster",
+            Self::ContactPoints => "contact-points",
+        }
+    }
+}
+
+/// A pair, stated whole or not at all. `Cqlshrc` supplies both halves, so it is
+/// a variant here rather than a [`Credential`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Credentials {
+    Stated {
+        username: String,
+        password: Credential,
+    },
+    /// Held as written: `~` is expanded where the file is read.
+    Cqlshrc(PathBuf),
+}
+
+/// `ChainOnly`: self-hosted clusters often issue node certificates with no SAN
+/// for the dialled address.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Verification {
+    #[default]
+    Full,
+    /// Chain, and the name against this one rather than the address dialled.
+    Named(String),
+    ChainOnly,
+    /// Encrypted, but the peer is unauthenticated.
+    Off,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TlsSettings {
+    pub trust: Trust,
+    pub identity: Option<ClientIdentity>,
+    pub verification: Verification,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Tls {
+    #[default]
+    Off,
+    On(TlsSettings),
+    /// Read at connect time, like its credentials. Plaintext when it says
+    /// nothing.
+    Cqlshrc(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -548,13 +730,24 @@ mod tests {
         assert_eq!(ConnectionConfig::named(name.clone()).address(), "localhost");
         assert_eq!(
             ConnectionConfig {
-                host: Some("db".to_owned()),
-                port: NonZeroU16::new(6543),
-                database: Some("orders".to_owned()),
-                ..ConnectionConfig::named(name)
+                target: Target::Postgres(PostgresTarget {
+                    host: Some("db".to_owned()),
+                    port: NonZeroU16::new(6543),
+                    database: Some("orders".to_owned()),
+                    ..PostgresTarget::default()
+                }),
+                ..ConnectionConfig::named(name.clone())
             }
             .address(),
             "db:6543/orders"
+        );
+        assert_eq!(
+            ConnectionConfig {
+                target: Target::Cassandra(CassandraTarget::at(&["a:9042", "b:9042"])),
+                ..ConnectionConfig::named(name)
+            }
+            .address(),
+            "a:9042, b:9042"
         );
     }
 

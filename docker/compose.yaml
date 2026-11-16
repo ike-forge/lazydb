@@ -1,3 +1,5 @@
+name: lazydb
+
 services:
   postgres:
     image: postgres:18
@@ -6,7 +8,7 @@ services:
       POSTGRES_PASSWORD: lazydb
       POSTGRES_DB: lazydb
     ports:
-      - "${LD_PG_PORT:-5432}:5432"
+      - "${LD_PG_PORT:-5433}:5432"
     volumes:
       - ./seed:/docker-entrypoint-initdb.d:ro
     healthcheck:
