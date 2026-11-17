@@ -164,7 +164,7 @@ fn palette(state: &State) -> Option<&CommandsPanel> {
         | Overlay::Inspect(_)
         | Overlay::Commit(_)
         | Overlay::Discard(_)
-        | Overlay::Fatal(_) => None,
+        | Overlay::Failed(_) => None,
     }
 }
 

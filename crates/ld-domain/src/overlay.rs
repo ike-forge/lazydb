@@ -61,10 +61,9 @@ pub enum Overlay {
     Commit(CommitPrompt),
     /// Not a `Message`: answering it ends the process.
     Discard(Discard),
-    /// Before there is an application to return to; its only exit is
-    /// `Effect::Quit`. A variant, so a reconnect path must choose it
-    /// deliberately.
-    Fatal(Message),
+    /// A connection or its catalog failed, so there is no application to
+    /// return to: `⏎` and `esc` lead back to the picker, `q` out.
+    Failed(Message),
 }
 
 /// A list, not a [`Message`]: a load yields many entries and multi-line

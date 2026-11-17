@@ -8,10 +8,13 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
-use ld_domain::search::Search;
+use ld_domain::model::Key;
+use ld_domain::pointer::Press;
 use ld_domain::style::{Severity, Token};
-use ld_domain::view::ConnectionRow;
+use ld_domain::view::{ConnectionRow, SiftView};
 
+use crate::drop::{Button, keys};
+use crate::hit::Modal;
 use crate::theme::Theme;
 
 /// Below this the picker is refused.
@@ -21,6 +24,8 @@ const PAD: u16 = 1;
 const MARKER: &str = "● ";
 const NO_MARKER: &str = "  ";
 const GAP: &str = "  ";
+/// Borders, a blank under the list, the keys.
+const CHROME_HEIGHT: u16 = 4;
 
 /// A glyph, not "(default)", which would push the address off a narrow block.
 fn marker(row: &ConnectionRow) -> &'static str {
@@ -30,11 +35,11 @@ fn marker(row: &ConnectionRow) -> &'static str {
 /// The block does not scroll, so a longer list is refused rather than opened
 /// dead.
 pub(crate) fn visible_rows(area: Rect) -> usize {
-    if area.width < MIN_WIDTH || area.height < 2 {
+    if area.width < MIN_WIDTH || area.height < CHROME_HEIGHT {
         return 0;
     }
 
-    usize::from(area.height - 2)
+    usize::from(area.height - CHROME_HEIGHT)
 }
 
 /// Measured over every connection, so columns hold still as a filter narrows.
@@ -59,7 +64,9 @@ fn width(area: Rect, rows: &[ConnectionRow]) -> u16 {
 }
 
 fn rect(area: Rect, rows: &[ConnectionRow]) -> Option<Rect> {
-    let height = u16::try_from(rows.len().saturating_add(2)).unwrap_or(u16::MAX);
+    let height = u16::try_from(rows.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(CHROME_HEIGHT);
 
     if rows.len() > visible_rows(area) {
         return None;
@@ -77,23 +84,27 @@ fn rect(area: Rect, rows: &[ConnectionRow]) -> Option<Rect> {
 
 /// Sized from every row; `matched` indexes the survivors and `selected` counts
 /// in it. `config_home` is drawn only for an empty list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the picker's view fields, passed apart so the empty list needs none"
+)]
 pub(crate) fn render(
     frame: &mut Frame,
     rows: &[ConnectionRow],
     matched: &[usize],
     selected: usize,
-    search: Option<&Search>,
+    sift: Option<&SiftView>,
     config_home: Option<&str>,
+    pressed: Option<Press>,
     theme: Theme,
-) {
+) -> Option<Modal> {
     if rows.is_empty() {
         empty(frame, config_home, theme);
-        return;
+        return None;
     }
 
-    let Some(area) = rect(frame.area(), rows) else {
-        return;
-    };
+    let area = rect(frame.area(), rows)?;
+    let search = sift.and_then(|sift| sift.search.as_ref());
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -108,6 +119,24 @@ pub(crate) fn render(
     frame.buffer_mut().set_style(area, theme.ground());
     frame.render_widget(block, area);
 
+    // Inert under a prompt: there `⏎` closes it rather than connecting.
+    let buttons = keys(
+        &[Button::new(
+            Key::Enter,
+            "Connect",
+            sift.is_none() && !matched.is_empty(),
+        )],
+        pressed,
+        theme,
+    );
+    let row = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+    frame.render_widget(Paragraph::new(buttons.line()), row);
+    let modal = Modal::new(area, buttons.at(row));
+    let inner = Rect {
+        height: inner.height.saturating_sub(CHROME_HEIGHT - 2),
+        ..inner
+    };
+
     // Says so rather than drawing an empty box.
     if matched.is_empty() {
         frame.render_widget(
@@ -117,7 +146,7 @@ pub(crate) fn render(
             )))]),
             inner,
         );
-        return;
+        return Some(modal);
     }
 
     let [name_width, address_width, _] = columns(rows);
@@ -161,6 +190,8 @@ pub(crate) fn render(
         inner,
         &mut state,
     );
+
+    Some(modal)
 }
 
 /// Sized here: `overlay::render` under-counts embedded newlines.
@@ -258,6 +289,7 @@ mod tests {
                     0,
                     None,
                     Some("/x/config.toml"),
+                    None,
                     Theme::default(),
                 );
             })
@@ -346,6 +378,13 @@ mod tests {
             !frame.contains("prod"),
             "a truncated connection name is a lie about which server it reaches"
         );
+    }
+
+    #[test]
+    fn the_picker_offers_a_connect_button() {
+        let frame = drawn(80, 24, &[row("prod", false)], &[0]);
+
+        assert!(frame.contains("⏎ Connect"));
     }
 
     #[test]

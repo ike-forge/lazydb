@@ -44,14 +44,14 @@ async fn connecting_and_describing_fills_the_tables_panel() {
 }
 
 #[tokio::test]
-async fn a_cluster_that_cannot_be_reached_raises_a_fatal_modal() {
+async fn a_cluster_that_cannot_be_reached_raises_a_failure_modal() {
     let cluster = FakeCluster::failing(DbError::Unreachable("no route to host".to_owned()));
     let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
 
     run(&cluster, &mut state, effects).await;
 
-    let Some(OverlayView::Fatal(overlay)) = view_model(&state).overlay else {
-        panic!("the failure ends the process rather than starting a half-connected app");
+    let Some(OverlayView::Failed(overlay)) = view_model(&state).overlay else {
+        panic!("the failure is raised rather than starting a half-connected app");
     };
     assert!(overlay.message.contains("no route to host"));
     assert!(
@@ -61,14 +61,14 @@ async fn a_cluster_that_cannot_be_reached_raises_a_fatal_modal() {
 }
 
 #[tokio::test]
-async fn a_cluster_that_connects_but_cannot_be_described_raises_a_fatal_modal() {
+async fn a_cluster_that_connects_but_cannot_be_described_raises_a_failure_modal() {
     let cluster = FakeCluster::failing_to_describe(DbError::Invalid("unauthorized".to_owned()));
     let (mut state, effects) = init(support::connected_config(), Vec::new(), Stamp::default());
 
     run(&cluster, &mut state, effects).await;
 
-    let Some(OverlayView::Fatal(overlay)) = view_model(&state).overlay else {
-        panic!("the failure ends the process rather than starting a half-connected app");
+    let Some(OverlayView::Failed(overlay)) = view_model(&state).overlay else {
+        panic!("the failure is raised rather than starting a half-connected app");
     };
     assert_eq!(overlay.title, "Catalog unavailable");
 }

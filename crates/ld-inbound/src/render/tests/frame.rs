@@ -171,9 +171,9 @@ fn the_loader_rests_until_something_is_outstanding() {
         "a connection attempt is the tree filling, and shows on its border"
     );
     assert_eq!(
-        row(&resting, 23),
-        row(&working, 23),
-        "and it is off the hint bar entirely"
+        row(&working, 23).trim_end(),
+        format!("{} | esc cancel", row(&resting, 23).trim_end()),
+        "and it is off the hint bar, which offers only the way out"
     );
 }
 
@@ -286,9 +286,9 @@ fn nothing_is_drawn_over_the_notice() {
 }
 
 #[test]
-fn a_fatal_failure_is_drawn_like_any_other_message() {
+fn a_failed_connection_is_drawn_with_a_way_back() {
     let mut state = State::default();
-    state.overlay = Some(Overlay::Fatal(Message {
+    state.overlay = Some(Overlay::Failed(Message {
         title: "Connection failed".to_owned(),
         message: "could not reach the server: no route to host".to_owned(),
         severity: Severity::Danger,
@@ -299,6 +299,7 @@ fn a_fatal_failure_is_drawn_like_any_other_message() {
 
     assert!(text.contains("Connection failed"), "{text}");
     assert!(text.contains("no route to host"), "{text}");
+    assert!(text.contains("⏎ Back to connections"), "{text}");
 }
 
 #[test]

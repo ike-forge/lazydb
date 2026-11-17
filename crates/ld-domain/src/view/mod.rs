@@ -120,7 +120,7 @@ pub enum OverlayView {
     Discard {
         message: String,
     },
-    Fatal(Message),
+    Failed(Message),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,7 +388,7 @@ fn overlay(state: &State) -> Option<OverlayView> {
         Overlay::Discard(discard) => Some(OverlayView::Discard {
             message: discard.message(),
         }),
-        Overlay::Fatal(message) => Some(OverlayView::Fatal(message.clone())),
+        Overlay::Failed(message) => Some(OverlayView::Failed(message.clone())),
     }
 }
 

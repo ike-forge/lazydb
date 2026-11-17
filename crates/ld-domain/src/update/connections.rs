@@ -275,6 +275,34 @@ pub(super) fn connected(
     vec![Effect::LoadSchema(conn)]
 }
 
+/// The attempt's task runs on; `is_current` drops its answer.
+pub(super) fn cancel_connecting(state: &mut State) -> bool {
+    let ConnectionState::Connecting { conn, .. } = state.connection else {
+        return false;
+    };
+    state.log.complete(Trace::Connect(conn), Outcome::Cancelled);
+    back_to_connections(state);
+    true
+}
+
+pub(super) fn failed_key(state: &mut State, key: Key) -> Vec<Effect> {
+    match key {
+        Key::Char('q') => quit(state),
+        Key::Enter | Key::Escape => {
+            back_to_connections(state);
+            Vec::new()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// `Disconnected`, not `Unchosen`: a picker dismissed from here stays away.
+fn back_to_connections(state: &mut State) {
+    state.overlay = None;
+    state.connection = ConnectionState::Disconnected;
+    open_connections(state);
+}
+
 pub(super) fn connect_failed(state: &mut State, conn: ConnId, error: DbError) -> Vec<Effect> {
     if !state.connection.is_current(conn) {
         return Vec::new();
@@ -285,7 +313,7 @@ pub(super) fn connect_failed(state: &mut State, conn: ConnId, error: DbError) ->
             detail: error.to_string(),
         },
     );
-    state.overlay = Some(Overlay::Fatal(Message {
+    state.overlay = Some(Overlay::Failed(Message {
         title: "Connection failed".to_owned(),
         message: error.to_string(),
         severity: Severity::Danger,
@@ -310,7 +338,7 @@ pub(super) fn schema_failed(state: &mut State, conn: ConnId, error: &DbError) ->
                 detail: error.to_string(),
             },
         );
-        state.overlay = Some(Overlay::Fatal(Message {
+        state.overlay = Some(Overlay::Failed(Message {
             title: "Catalog unavailable".to_owned(),
             message: error.to_string(),
             severity: Severity::Danger,

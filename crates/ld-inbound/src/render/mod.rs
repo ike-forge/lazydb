@@ -193,7 +193,7 @@ struct Wrapped {
 
 fn render_overlay(frame: &mut Frame, view: &ViewModel, hint_bar: Rect, theme: Theme) -> Wrapped {
     match &view.overlay {
-        Some(OverlayView::Message(message) | OverlayView::Fatal(message)) => {
+        Some(OverlayView::Message(message)) => {
             crate::overlay::render(frame, message, theme);
         }
         Some(OverlayView::Commands {
@@ -238,16 +238,22 @@ fn render_overlay(frame: &mut Frame, view: &ViewModel, hint_bar: Rect, theme: Th
             sift,
             config_home,
         }) => {
-            crate::connections::render(
+            let modal = crate::connections::render(
                 frame,
                 rows,
                 matched,
                 *selected,
-                sift.as_ref().and_then(|sift| sift.search.as_ref()),
+                sift.as_ref(),
                 config_home.as_deref(),
+                view.pressed,
                 theme,
             );
             render_sift(frame, hint_bar, sift.as_ref(), view, theme);
+
+            return Wrapped {
+                modal,
+                ..Wrapped::default()
+            };
         }
         Some(OverlayView::History {
             labels,
@@ -274,7 +280,8 @@ fn render_overlay(frame: &mut Frame, view: &ViewModel, hint_bar: Rect, theme: Th
             | OverlayView::Export(_)
             | OverlayView::Inspect(_)
             | OverlayView::Commit(_)
-            | OverlayView::Discard { .. },
+            | OverlayView::Discard { .. }
+            | OverlayView::Failed(_),
         ) => return render_measured(frame, view, theme),
         None => {}
     }
@@ -312,6 +319,10 @@ fn render_measured(frame: &mut Frame, view: &ViewModel, theme: Theme) -> Wrapped
                 ..Wrapped::default()
             }
         }
+        Some(OverlayView::Failed(message)) => Wrapped {
+            modal: crate::overlay::render_failed(frame, message, pressed, theme),
+            ..Wrapped::default()
+        },
         Some(OverlayView::Discard { message }) => Wrapped {
             modal: crate::commit::render_discard(frame, message, pressed, theme),
             ..Wrapped::default()
@@ -361,7 +372,7 @@ fn dims_the_panels(overlay: Option<&OverlayView>) -> bool {
     match overlay {
         Some(
             OverlayView::Message(_)
-            | OverlayView::Fatal(_)
+            | OverlayView::Failed(_)
             | OverlayView::Commands { .. }
             | OverlayView::Themes { .. }
             | OverlayView::Connections { .. }

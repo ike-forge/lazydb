@@ -83,7 +83,7 @@ fn a_failed_connection_leaves_its_reason_in_the_trail() {
 }
 
 #[test]
-fn a_failed_startup_connection_raises_a_modal_that_ends_the_process() {
+fn a_failed_startup_connection_raises_a_modal() {
     let (mut state, conn, _effects) = started_on_default(Vec::new(), Stamp::default());
 
     let _effects = update(
@@ -95,12 +95,16 @@ fn a_failed_startup_connection_raises_a_modal_that_ends_the_process() {
         },
     );
 
-    assert!(matches!(state.overlay, Some(Overlay::Fatal(_))));
+    assert!(matches!(state.overlay, Some(Overlay::Failed(_))));
 }
 
-#[test]
-fn the_fatal_modal_quits_rather_than_dismissing() {
+/// Measured, so the picker has room to open.
+fn failed_on_default() -> State {
     let (mut state, conn, _effects) = started_on_default(Vec::new(), Stamp::default());
+    update(
+        &mut state,
+        Msg::Measured(Geometry::new([8, 14, 20, 1], 37, 14).with_connection_rows(20)),
+    );
     let _effects = update(
         &mut state,
         Msg::ConnectFailed {
@@ -110,23 +114,74 @@ fn the_fatal_modal_quits_rather_than_dismissing() {
         },
     );
 
-    for key in [Key::Escape, Key::Char('q')] {
-        let mut state = state.clone();
+    state
+}
+
+#[test]
+fn the_failure_modal_leads_back_to_the_connections() {
+    for key in [Key::Enter, Key::Escape] {
+        let mut state = failed_on_default();
         let effects = press(&mut state, key);
 
+        assert!(!effects.contains(&Effect::Quit), "{key:?} keeps the app");
         assert!(
-            effects.contains(&Effect::Quit),
-            "{key:?} ends the process rather than revealing an application that never started"
+            matches!(state.overlay, Some(Overlay::Connections { .. })),
+            "{key:?} reopens the picker"
         );
-        assert!(
-            matches!(state.overlay, Some(Overlay::Fatal(_))),
-            "and does not dismiss"
-        );
+        assert!(matches!(state.connection, ConnectionState::Disconnected));
     }
 }
 
 #[test]
-fn a_fatal_modal_replaces_the_diagnostics_it_lands_on() {
+fn the_failure_modal_still_quits_on_q() {
+    let mut state = failed_on_default();
+
+    assert!(press(&mut state, Key::Char('q')).contains(&Effect::Quit));
+}
+
+#[test]
+fn the_failure_modal_ignores_other_keys() {
+    let mut state = failed_on_default();
+    press(&mut state, Key::Char('j'));
+
+    assert!(matches!(state.overlay, Some(Overlay::Failed(_))));
+}
+
+#[test]
+fn esc_abandons_a_connection_in_flight_for_the_picker() {
+    let (mut state, conn, _effects) = started_on_default(Vec::new(), Stamp::default());
+    update(
+        &mut state,
+        Msg::Measured(Geometry::new([8, 14, 20, 1], 37, 14).with_connection_rows(20)),
+    );
+    state.overlay = None;
+
+    press(&mut state, Key::Escape);
+
+    assert!(matches!(state.overlay, Some(Overlay::Connections { .. })));
+    assert!(
+        !state.connection.is_current(conn),
+        "a late answer is dropped"
+    );
+    let entry = state.log.entries().next().expect("the connection entry");
+    assert!(matches!(entry.outcome(), Outcome::Cancelled));
+
+    update(
+        &mut state,
+        Msg::Connected {
+            conn,
+            posture: Posture::Writable,
+            took: Duration::ZERO,
+        },
+    );
+    assert!(
+        matches!(state.connection, ConnectionState::Disconnected),
+        "the abandoned attempt does not connect behind the picker"
+    );
+}
+
+#[test]
+fn a_failure_modal_replaces_the_diagnostics_it_lands_on() {
     let (mut state, conn, _effects) =
         started_on_default(vec![diagnostic("boom")], Stamp::default());
     assert!(matches!(state.overlay, Some(Overlay::Diagnostics(_))));
@@ -140,7 +195,7 @@ fn a_fatal_modal_replaces_the_diagnostics_it_lands_on() {
         },
     );
 
-    assert!(matches!(state.overlay, Some(Overlay::Fatal(_))));
+    assert!(matches!(state.overlay, Some(Overlay::Failed(_))));
 }
 
 #[test]
@@ -698,7 +753,7 @@ fn a_failed_connection_is_recorded_and_raised() {
 
     assert!(effects.is_empty());
     assert!(matches!(state.connection, ConnectionState::Failed(_)));
-    let Some(Overlay::Fatal(overlay)) = state.overlay else {
+    let Some(Overlay::Failed(overlay)) = state.overlay else {
         panic!("a failure is shown");
     };
     assert_eq!(overlay.severity, Severity::Danger);
@@ -789,7 +844,7 @@ fn a_message_arriving_over_an_open_prompt_restores_the_previous_search() {
         "the live prompt is previewing its own buffer, not the previous search"
     );
 
-    // `EditorFailed` stands in: `SchemaFailed` raises `Fatal`, which has
+    // `EditorFailed` stands in: `SchemaFailed` raises `Failed`, which has
     // nothing to preserve.
     update(
         &mut state,

@@ -200,7 +200,7 @@ pub(super) fn fits(overlay: &Overlay, geometry: Geometry, config: &Config) -> bo
         | Overlay::Search(_)
         | Overlay::Filter(_)
         | Overlay::Discard(_)
-        | Overlay::Fatal(_) => true,
+        | Overlay::Failed(_) => true,
     }
 }
 

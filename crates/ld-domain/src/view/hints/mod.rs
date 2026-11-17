@@ -7,15 +7,17 @@ mod bindings;
 mod tests;
 
 use bindings::{
-    ABORT, CLEAR, CLEAR_FILTER, CLOSE, COMMIT, COMMIT_HINT, COMMIT_ROW, COMPLETE, CONNECTIONS,
-    CONNECTIONS_GLOBAL, COPY, COPY_LINE, DELETE, DELETE_TYPED, DELETE_YES_NO, DIAGNOSTICS_GLOBAL,
-    DISCARD, DONE, DROP, DROP_TYPED, DROP_YES_NO, EDIT, ENTER, EVERY_PAGE, EXPORT, EXPORT_COPY,
-    EXPORT_OVERWRITE, EXPORT_ROWS, FIELD, FILTER, FORMAT, HISTORY, HISTORY_GLOBAL, HISTORY_HINT,
-    INSERT, INSERT_ROW, INSPECT_GLOBAL, INSPECT_ROW, LEAVE, MOVE, NEXT_MATCH, NEXT_OPTION,
-    NEXT_PAGE, NULL, PALETTE_GLOBAL, RUN, SEARCH, SEARCH_GLOBAL, SELECT, SORT, STOP, TOGGLE, UNSET,
+    ABORT, CANCEL, CLEAR, CLEAR_FILTER, CLOSE, COMMIT, COMMIT_HINT, COMMIT_ROW, COMPLETE,
+    CONNECTIONS, CONNECTIONS_GLOBAL, COPY, COPY_LINE, DELETE, DELETE_TYPED, DELETE_YES_NO,
+    DIAGNOSTICS_GLOBAL, DISCARD, DONE, DROP, DROP_TYPED, DROP_YES_NO, EDIT, ENTER, EVERY_PAGE,
+    EXPORT, EXPORT_COPY, EXPORT_OVERWRITE, EXPORT_ROWS, FIELD, FILTER, FORMAT, HISTORY,
+    HISTORY_GLOBAL, HISTORY_HINT, INSERT, INSERT_ROW, INSPECT_GLOBAL, INSPECT_ROW, LEAVE, MOVE,
+    NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL, PALETTE_GLOBAL, RUN, SEARCH, SEARCH_GLOBAL, SELECT,
+    SORT, STOP, TOGGLE, UNSET,
 };
 pub(crate) use bindings::{GLOBAL, THEMES, THEMES_GLOBAL};
 
+use crate::connection::ConnectionState;
 use crate::drop::DropPrompt;
 use crate::export::{Button, ExportForm, Stop};
 use crate::inspect::Inspector;
@@ -117,7 +119,7 @@ fn overlay_bar(state: &State) -> Option<HintBar> {
         Overlay::Search(_) | Overlay::Filter(_) => fixed(&[], SEARCH_GLOBAL),
         Overlay::Export(form) => export_bar(form),
         Overlay::Drop(prompt) => drop_bar(prompt),
-        Overlay::Message(_) | Overlay::Fatal(_) => return None,
+        Overlay::Message(_) | Overlay::Failed(_) => return None,
     })
 }
 
@@ -168,7 +170,9 @@ fn panel_bar(state: &State) -> HintBar {
     if !state.in_flight.is_empty() {
         panel.push(rendered(&ABORT));
     }
-    if state.focus() == Panel::Contents && state.contents.fetching_all() {
+    if matches!(state.connection, ConnectionState::Connecting { .. }) {
+        common.push(rendered(&CANCEL));
+    } else if state.focus() == Panel::Contents && state.contents.fetching_all() {
         common.push(rendered(&STOP));
     } else if state.takes_text() {
         common.push(rendered(&DONE));

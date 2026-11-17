@@ -1,11 +1,15 @@
 //! The block drawn over the panels when something needs saying.
 
+use ld_domain::model::Key;
 use ld_domain::overlay::Message;
+use ld_domain::pointer::Press;
 use ld_domain::style::Token;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
+use crate::drop::{Button, keys};
+use crate::hit::Modal;
 use crate::theme::Theme;
 
 const MAX_W: u16 = 60;
@@ -14,12 +18,35 @@ const MIN_W: u16 = 20;
 const MIN_H: u16 = 5;
 /// Outer margin; `Block::inner` accounts for the border.
 const MARGIN_W: u16 = 4;
+/// A blank and the keys, under the message.
+const BUTTON_ROWS: u16 = 2;
 
 pub(crate) fn render(frame: &mut Frame, overlay: &Message, theme: Theme) {
-    let area = frame.area();
-    let Some(rect) = centred(area, overlay) else {
-        return;
-    };
+    drawn(frame, overlay, 0, theme);
+}
+
+/// `q` still quits; the button names the way that keeps the app.
+pub(crate) fn render_failed(
+    frame: &mut Frame,
+    overlay: &Message,
+    pressed: Option<Press>,
+    theme: Theme,
+) -> Option<Modal> {
+    let (rect, inner) = drawn(frame, overlay, BUTTON_ROWS, theme)?;
+    let buttons = keys(
+        &[Button::new(Key::Enter, "Back to connections", true)],
+        pressed,
+        theme,
+    );
+    let row = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+    frame.render_widget(Paragraph::new(buttons.line()), row);
+
+    Some(Modal::new(rect, buttons.at(row)))
+}
+
+/// The message fills the inner rect less `footer` rows at its foot.
+fn drawn(frame: &mut Frame, overlay: &Message, footer: u16, theme: Theme) -> Option<(Rect, Rect)> {
+    let rect = centred(frame.area(), overlay, footer)?;
 
     // The severity replaces the border style: this border must not read like
     // the others.
@@ -28,24 +55,30 @@ pub(crate) fn render(frame: &mut Frame, overlay: &Message, theme: Theme) {
         .title(overlay.title.as_str())
         .border_style(theme.style(Token::Severity(overlay.severity)));
     let inner = block.inner(rect);
+    let message = Rect {
+        height: inner.height.saturating_sub(footer),
+        ..inner
+    };
 
     frame.render_widget(Clear, rect);
     frame.buffer_mut().set_style(rect, theme.ground());
     frame.render_widget(block, rect);
     frame.render_widget(
         Paragraph::new(overlay.message.as_str()).wrap(Wrap { trim: true }),
-        inner,
+        message,
     );
+
+    Some((rect, inner))
 }
 
-fn centred(area: Rect, overlay: &Message) -> Option<Rect> {
+fn centred(area: Rect, overlay: &Message, footer: u16) -> Option<Rect> {
     let width = area.width.saturating_sub(MARGIN_W).min(MAX_W);
-    if width < MIN_W || area.height < MIN_H {
+    if width < MIN_W || area.height < MIN_H + footer {
         return None;
     }
 
     let lines = wrapped_line_count(&overlay.message, width.saturating_sub(2));
-    let height = lines.saturating_add(2).clamp(MIN_H, area.height);
+    let height = (lines + footer).saturating_add(2).clamp(MIN_H, area.height);
 
     Some(Rect::new(
         area.x + (area.width - width) / 2,

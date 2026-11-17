@@ -312,7 +312,7 @@ fn a_panel_with_nothing_to_list_says_what_it_is_waiting_for() {
 #[test]
 fn a_failure_notice_is_drawn_in_the_danger_style_rather_than_dimmed() {
     let mut state = State::default();
-    // Startup failures are `Fatal`; a refused read is what still shows a danger
+    // Startup failures are `Failed`; a refused read is what still shows a danger
     // notice.
     state.contents.refused(
         Subject::Table(TableRef::new("shop", "orders")),

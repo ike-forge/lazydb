@@ -28,7 +28,7 @@ pub(crate) const GLOBAL: &[Binding] = &[Binding::new(&[PALETTE], "commands")];
 pub(crate) const QUIT: Binding = Binding::new(&[key('q')], "quit");
 
 pub(super) const CLOSE: Binding = Binding::new(&[ESC], "close");
-const CANCEL: Binding = Binding::new(&[ESC], "cancel");
+pub(super) const CANCEL: Binding = Binding::new(&[ESC], "cancel");
 const NO: Binding = Binding::new(&[key('n'), ESC], "cancel");
 /// Not global: `/` is text in Queries.
 pub(super) const SEARCH: Binding = Binding::new(&[key('/')], "search");

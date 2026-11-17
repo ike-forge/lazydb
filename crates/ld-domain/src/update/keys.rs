@@ -14,7 +14,9 @@ use crate::style::Severity;
 use crate::theme::BuiltIn;
 
 use super::commit::{commit_extent, commit_inspected_row, commit_key, discard_key, open_commit};
-use super::connections::{connections_key, offer_connections, open_connections};
+use super::connections::{
+    cancel_connecting, connections_key, failed_key, offer_connections, open_connections,
+};
 use super::drop::{drop_key, open_drop};
 use super::export::{cancel_pending_export, export_chord, export_key, open_export};
 use super::history::{history_key, open_history};
@@ -49,12 +51,9 @@ impl Edge {
 pub(super) fn handle_key(state: &mut State, press: KeyPress) -> Vec<Effect> {
     state.mark_dirty();
 
-    // Before modifiers and prefix: the modal has one exit.
-    if let Some(Overlay::Fatal(_)) = state.overlay {
-        return match press.key {
-            Key::Escape | Key::Char('q') => quit(state),
-            _ => Vec::new(),
-        };
+    // Before modifiers and prefix: the modal claims every press.
+    if let Some(Overlay::Failed(_)) = state.overlay {
+        return failed_key(state, press.key);
     }
 
     // alt and unclaimed ctrl chords are refused, not reinterpreted. shift is
@@ -114,7 +113,8 @@ pub(super) fn overlay_key(state: &mut State, key: Key) -> Option<Vec<Effect>> {
         Some(Overlay::Commit(_)) => commit_key(state, key),
         // `q` included: the question must be answered, not pressed past.
         Some(Overlay::Discard(_)) => discard_key(state, key),
-        Some(Overlay::Message(_) | Overlay::Fatal(_)) | None => return None,
+        Some(Overlay::Failed(_)) => failed_key(state, key),
+        Some(Overlay::Message(_)) | None => return None,
     };
 
     Some(effects)
@@ -188,7 +188,7 @@ pub(super) fn takes_text(state: &State) -> bool {
         ) => sift.is_some(),
         Some(Overlay::Inspect(inspector)) => inspector.field().is_some(),
         Some(
-            Overlay::Diagnostics(_) | Overlay::Fatal(_) | Overlay::Commit(_) | Overlay::Discard(_),
+            Overlay::Diagnostics(_) | Overlay::Failed(_) | Overlay::Commit(_) | Overlay::Discard(_),
         ) => false,
         Some(Overlay::Message(_)) | None => state.takes_text(),
     }
@@ -234,7 +234,7 @@ pub(super) fn goto(state: &mut State, edge: Edge) {
         },
         Some(Overlay::Message(_)) | None => scroll(state, edge.motion()),
         Some(
-            Overlay::Fatal(_)
+            Overlay::Failed(_)
             | Overlay::Search(_)
             | Overlay::Export(_)
             | Overlay::Filter(_)
@@ -290,7 +290,7 @@ pub(super) fn walk_completion(state: &mut State, forwards: bool) {
 
 /// One rung per press: the thing most recently put on screen comes off first.
 pub(super) fn escape(state: &mut State) {
-    if dismiss_overlay(state) {
+    if dismiss_overlay(state) || cancel_connecting(state) {
         return;
     }
 
@@ -401,8 +401,8 @@ pub(super) fn dismiss_overlay(state: &mut State) -> bool {
             true
         }
         // A click routed here by `handle_pointer` must not end the modal.
-        Some(fatal @ Overlay::Fatal(_)) => {
-            state.overlay = Some(fatal);
+        Some(failed @ Overlay::Failed(_)) => {
+            state.overlay = Some(failed);
             true
         }
         None => false,
@@ -599,7 +599,7 @@ pub(super) fn page(state: &mut State, key: Key) -> Vec<Effect> {
         Some(Overlay::Inspect(_)) => inspect_key(state, key),
         Some(Overlay::Commit(_)) => commit_key(state, key),
         Some(
-            Overlay::Fatal(_)
+            Overlay::Failed(_)
             | Overlay::Search(_)
             | Overlay::Export(_)
             | Overlay::Filter(_)
