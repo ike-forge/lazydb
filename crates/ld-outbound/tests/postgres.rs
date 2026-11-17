@@ -429,10 +429,23 @@ async fn aborting_a_query_cancels_it_on_the_server() {
     );
 }
 
+/// The old default cut every query off at five seconds.
+#[tokio::test]
+async fn by_default_a_long_query_runs_to_completion() {
+    let db = connected(Posture::ReadOnly, DriverConfig::default()).await;
+
+    let result = db
+        .execute(conn(), &read("SELECT pg_sleep(6), 1 AS done"))
+        .await
+        .expect("no request timeout by default");
+
+    assert_eq!(result.rows[0].values[1], Value::Int(1));
+}
+
 #[tokio::test]
 async fn a_slow_query_times_out_and_is_cancelled() {
     let driver = DriverConfig {
-        request_timeout: Millis::try_new(200).unwrap(),
+        request_timeout: Some(Millis::try_new(200).unwrap()),
         ..DriverConfig::default()
     };
     let db = connected(Posture::ReadOnly, driver).await;

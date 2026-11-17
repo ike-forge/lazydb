@@ -131,9 +131,11 @@ fn execution_profile(target: &CassandraTarget, driver: &DriverConfig) -> Executi
 
     ExecutionProfile::builder()
         .consistency(consistency(target.consistency))
-        .request_timeout(Some(Duration::from_millis(
-            driver.request_timeout.get().into(),
-        )))
+        .request_timeout(
+            driver
+                .request_timeout
+                .map(|timeout| Duration::from_millis(timeout.get().into())),
+        )
         .load_balancing_policy(policy.build())
         .build()
 }

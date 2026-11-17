@@ -126,7 +126,14 @@ mod tests {
         assert_eq!(config.layout, default.layout, "{mismatch}");
         assert_eq!(config.grid, default.grid, "{mismatch}");
         assert_eq!(config.history, default.history, "{mismatch}");
-        assert_eq!(config.driver, default.driver, "{mismatch}");
+        assert_eq!(
+            ld_domain::config::DriverConfig {
+                request_timeout: None,
+                ..config.driver
+            },
+            default.driver,
+            "{mismatch}"
+        );
     }
 
     /// By hand: `serde` cannot enumerate fields. An undocumented new key fails

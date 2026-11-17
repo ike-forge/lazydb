@@ -558,7 +558,8 @@ pub struct HistoryConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DriverConfig {
     pub page_size: PageSize,
-    pub request_timeout: Millis,
+    /// Unset by default: a long query is the user's to cancel, not ours.
+    pub request_timeout: Option<Millis>,
     pub connect_timeout: Millis,
 }
 

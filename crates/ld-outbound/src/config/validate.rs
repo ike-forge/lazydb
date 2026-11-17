@@ -238,16 +238,13 @@ fn driver(layer: Option<DriverLayer>, report: &mut Report) -> DriverConfig {
         .page_size
         .and_then(|value| report.keep(PageSize::try_new(value.value), &value, "driver.page_size"))
         .unwrap_or_default();
-    let request_timeout = layer
-        .request_timeout_ms
-        .and_then(|value| {
-            report.keep(
-                Millis::try_new(value.value),
-                &value,
-                "driver.request_timeout_ms",
-            )
-        })
-        .unwrap_or_default();
+    let request_timeout = layer.request_timeout_ms.and_then(|value| {
+        report.keep(
+            Millis::try_new(value.value),
+            &value,
+            "driver.request_timeout_ms",
+        )
+    });
     let connect_timeout = layer
         .connect_timeout_ms
         .and_then(|value| {

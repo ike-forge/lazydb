@@ -39,7 +39,7 @@ struct Open {
     client: Client,
     cancel: CancelToken,
     tls: Option<MakeRustlsConnect>,
-    request_timeout: Duration,
+    request_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for Open {
@@ -156,7 +156,7 @@ impl Database for Postgres {
             cancel: client.cancel_token(),
             client,
             tls,
-            request_timeout: millis(driver.request_timeout.get()),
+            request_timeout: driver.request_timeout.map(|timeout| millis(timeout.get())),
         };
         self.open.write().await.insert(conn, Arc::new(open));
 
@@ -176,9 +176,8 @@ impl Database for Postgres {
             .client
             .simple_query("SELECT transaction_timestamp() <> statement_timestamp()");
 
-        match tokio::time::timeout(open.request_timeout, asked).await {
-            Err(_) => Err(DbError::Timeout),
-            Ok(Ok(messages)) => Ok(
+        match within(open.request_timeout, asked).await? {
+            Ok(messages) => Ok(
                 if messages.iter().any(|message| {
                     matches!(message, SimpleQueryMessage::Row(row) if row.get(0) == Some("t"))
                 }) {
@@ -187,10 +186,10 @@ impl Database for Postgres {
                     Transaction::Idle
                 },
             ),
-            Ok(Err(error)) if error.code() == Some(&SqlState::IN_FAILED_SQL_TRANSACTION) => {
+            Err(error) if error.code() == Some(&SqlState::IN_FAILED_SQL_TRANSACTION) => {
                 Ok(Transaction::Failed)
             }
-            Ok(Err(error)) => Err(db_error(&error)),
+            Err(error) => Err(db_error(&error)),
         }
     }
 
@@ -290,6 +289,15 @@ fn millis(value: u32) -> Duration {
     Duration::from_millis(value.into())
 }
 
+async fn within<T>(limit: Option<Duration>, work: impl Future<Output = T>) -> Result<T, DbError> {
+    match limit {
+        Some(limit) => tokio::time::timeout(limit, work)
+            .await
+            .map_err(|_| DbError::Timeout),
+        None => Ok(work.await),
+    }
+}
+
 /// The statement without its trailing `;`, when wrapping it in a subquery is
 /// valid; `None` runs it as written, unpaged.
 fn pageable(stmt: &Statement) -> Option<&str> {
@@ -334,7 +342,7 @@ impl Drop for CancelOnDrop {
         };
         runtime.spawn(async move {
             let token = open.cancel.clone();
-            // Best effort: a failed cancel leaves the query to its own timeout.
+            // Best effort: a failed cancel leaves the query running server-side.
             let _ = match &open.tls {
                 Some(tls) => token.cancel_query(tls.clone()).await,
                 None => token.cancel_query(NoTls).await,
@@ -365,9 +373,7 @@ async fn run(open: &Arc<Open>, sql: &str) -> Result<Page, DbError> {
     };
 
     // An elapsed timeout drops the guard armed, which cancels server-side.
-    let page = tokio::time::timeout(open.request_timeout, read)
-        .await
-        .map_err(|_| DbError::Timeout)??;
+    let page = within(open.request_timeout, read).await??;
     guard.disarm();
     Ok(page)
 }
