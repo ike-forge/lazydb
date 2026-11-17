@@ -29,6 +29,7 @@ pub(crate) const DRACULA: Palette = Palette {
     table: rgb(0x8be9fd),
     primary_key: rgb(0xffb86c),
     foreign_key: rgb(0x50fa7b),
+    clustering: rgb(0x50fa7b),
     column: rgb(0xf8f8f2),
     label: rgb(0xadb5cb),
     section: rgb(0xff79c6),

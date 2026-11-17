@@ -233,11 +233,11 @@ fn the_map_resolves_every_drawn_tab_to_its_place_in_the_strip() {
     let strip = row(&buffer, DDL_BORDER);
 
     assert!(
-        strip.contains("Col - Key - Idx - DDL"),
+        strip.contains("Col - Idx - DDL"),
         "row {DDL_BORDER} must be the strip this test is about: {strip:?}"
     );
 
-    for (label, tab) in [("Col", 0), ("Key", 1), ("Idx", 2), ("DDL", 3)] {
+    for (label, tab) in [("Col", 0), ("Idx", 1), ("DDL", 2)] {
         assert_eq!(
             map.hit(column_of(&buffer, DDL_BORDER, label), DDL_BORDER),
             Some(Click::Tab {

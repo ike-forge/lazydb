@@ -251,6 +251,7 @@ pub enum Role {
     Table,
     PrimaryKey,
     ForeignKey,
+    Clustering,
     Column,
     Label,
     Section,
@@ -267,7 +268,7 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Base,
         Self::Text,
         Self::Dim,
@@ -284,6 +285,7 @@ impl Role {
         Self::Table,
         Self::PrimaryKey,
         Self::ForeignKey,
+        Self::Clustering,
         Self::Column,
         Self::Label,
         Self::Section,
@@ -318,6 +320,7 @@ impl Role {
             Self::Table => "table",
             Self::PrimaryKey => "primary_key",
             Self::ForeignKey => "foreign_key",
+            Self::Clustering => "clustering",
             Self::Column => "column",
             Self::Label => "label",
             Self::Section => "section",

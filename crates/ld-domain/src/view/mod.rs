@@ -571,6 +571,12 @@ pub fn ddl_tabs(state: &State) -> &'static [StructureTab] {
     details::tabs_for(state)
 }
 
+/// The tab drawn: the held one, or the strip's first where it is not drawn.
+#[must_use]
+pub fn ddl_shown_tab(state: &State) -> StructureTab {
+    details::shown_tab(state)
+}
+
 fn title(state: &State, panel: Panel) -> PanelTitle {
     let number = panel.number();
 

@@ -51,6 +51,7 @@ impl Flavour {
             table: self.blue,
             primary_key: self.yellow,
             foreign_key: self.teal,
+            clustering: self.teal,
             column: self.text,
             label: self.subtext1,
             section: self.pink,

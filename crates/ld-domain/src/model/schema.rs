@@ -30,6 +30,8 @@ pub struct Server {
 pub struct Schema {
     pub name: String,
     pub kind: SchemaKind,
+    /// A keyspace's replication and durability; empty for a Postgres schema.
+    pub options: Options,
     /// Every relation kind; [`Table::kind`] tells them apart.
     pub tables: BTreeMap<String, Table>,
 }
@@ -40,6 +42,7 @@ impl Schema {
         Self {
             name: name.to_owned(),
             kind: SchemaKind::of(engine, name),
+            options: Options::default(),
             tables: BTreeMap::new(),
         }
     }
@@ -93,9 +96,95 @@ pub struct Table {
     /// Check and unique: the primary and foreign keys have their own fields.
     pub constraints: Vec<Constraint>,
     pub comment: Option<String>,
+    /// Empty where the adapter reads none, which is every engine but
+    /// Cassandra.
+    pub options: Options,
     /// A view's `SELECT` as the server renders it; a Cassandra materialized
     /// view's `SELECT … WHERE`.
     pub definition: Option<String>,
+}
+
+/// What a table or schema is configured with beyond its shape, as the server
+/// renders each value: Cassandra's table options and a keyspace's
+/// replication. Text, not typed fields: the set differs across majors (3.11
+/// `read_repair_chance`, 4.0 `read_repair`, 5.0 `memtable`). The ordering is
+/// the real knowledge.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Options {
+    by_name: BTreeMap<String, String>,
+}
+
+/// A layout rule: these fit on one line and read as a block; [`BULKY`] ones
+/// wrap.
+const RANKED: &[&str] = &[
+    "default_time_to_live",
+    "gc_grace_seconds",
+    "caching",
+    "bloom_filter_fp_chance",
+    "speculative_retry",
+    "additional_write_policy",
+    "read_repair",
+    "cdc",
+    "crc_check_chance",
+    "min_index_interval",
+    "max_index_interval",
+    "memtable",
+    "memtable_flush_period_in_ms",
+    "allow_auto_snapshot",
+    "incremental_backups",
+    "flags",
+    "id",
+    "extensions",
+];
+
+/// Below the unranked tail, so an unknown wide option cannot split the block
+/// above.
+const BULKY: &[&str] = &["comment", "compaction", "compression"];
+
+fn listed(name: &str) -> bool {
+    RANKED.contains(&name) || BULKY.contains(&name)
+}
+
+impl Options {
+    #[must_use]
+    pub const fn new(by_name: BTreeMap<String, String>) -> Self {
+        Self { by_name }
+    }
+
+    /// Unknown options sort alphabetically in the middle, so newer or older
+    /// clusters stay fully visible.
+    pub fn in_display_order(&self) -> impl Iterator<Item = (&str, &str)> {
+        let named = |names: &'static [&'static str]| {
+            names
+                .iter()
+                .filter_map(|name| self.get(name).map(|value| (*name, value)))
+        };
+
+        let rest = self
+            .by_name
+            .iter()
+            .filter(|(name, _)| !listed(name))
+            .map(|(name, value)| (name.as_str(), value.as_str()));
+
+        named(RANKED).chain(rest).chain(named(BULKY))
+    }
+
+    /// These added, replacing any of the same name.
+    #[must_use]
+    pub fn with(mut self, more: BTreeMap<String, String>) -> Self {
+        self.by_name.extend(more);
+        self
+    }
+
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.by_name.get(name).map(String::as_str)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -429,6 +518,113 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn options(pairs: &[(&str, &str)]) -> Options {
+        Options::new(
+            pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        )
+    }
+
+    fn ordered(options: &Options) -> Vec<&str> {
+        options.in_display_order().map(|(name, _)| name).collect()
+    }
+
+    #[test]
+    fn options_are_listed_by_layout_rather_than_by_name() {
+        let options = options(&[
+            ("bloom_filter_fp_chance", "0.01"),
+            ("comment", "orders"),
+            ("gc_grace_seconds", "864000"),
+        ]);
+
+        assert_eq!(
+            ordered(&options),
+            ["gc_grace_seconds", "bloom_filter_fp_chance", "comment"]
+        );
+    }
+
+    #[test]
+    fn a_property_this_cassandra_version_does_not_have_is_simply_absent() {
+        let options = options(&[("comment", "orders"), ("id", "abc")]);
+
+        assert_eq!(ordered(&options), ["id", "comment"]);
+    }
+
+    #[test]
+    fn a_property_the_ranking_has_never_heard_of_is_listed_after_the_ranked_ones() {
+        // Removed in 4.0: unranked, still shown.
+        let options = options(&[
+            ("read_repair_chance", "0.0"),
+            ("dclocal_read_repair_chance", "0.1"),
+            ("comment", "orders"),
+            ("id", "abc"),
+        ]);
+
+        assert_eq!(
+            ordered(&options),
+            [
+                "id",
+                "dclocal_read_repair_chance",
+                "read_repair_chance",
+                "comment",
+            ],
+            "unranked properties sort alphabetically after every ranked one, and the bulky ones sort last of all"
+        );
+    }
+
+    #[test]
+    fn a_table_whose_options_row_was_missing_lists_nothing() {
+        let options = Options::default();
+
+        assert!(options.is_empty());
+        assert_eq!(ordered(&options), [""; 0]);
+    }
+
+    #[test]
+    fn every_ranked_name_is_listed_once() {
+        let mut seen = std::collections::BTreeSet::new();
+        for name in RANKED.iter().chain(BULKY.iter()) {
+            assert!(
+                seen.insert(*name),
+                "{name} is ranked twice, so one of the two positions is dead"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bulky_options_are_listed_below_even_the_ones_this_build_has_never_heard_of() {
+        let options = Options::new(BTreeMap::from([
+            ("comment".to_owned(), "Order history.".to_owned()),
+            (
+                "compaction".to_owned(),
+                "{'class': 'SizeTieredCompactionStrategy'}".to_owned(),
+            ),
+            (
+                "compression".to_owned(),
+                "{'chunk_length_in_kb': '16'}".to_owned(),
+            ),
+            ("gc_grace_seconds".to_owned(), "864000".to_owned()),
+            ("zzz_option_from_the_future".to_owned(), "on".to_owned()),
+        ]));
+
+        assert_eq!(
+            options
+                .in_display_order()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            [
+                "gc_grace_seconds",
+                "zzz_option_from_the_future",
+                "comment",
+                "compaction",
+                "compression",
+            ],
+            "an unranked option must not land between the compact table and the blocks below it"
+        );
+    }
 
     fn at(schema: &str, table: &str) -> RelationRef {
         RelationRef {

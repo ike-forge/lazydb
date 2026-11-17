@@ -367,7 +367,7 @@ fn listing(table: Table) -> State {
 
 fn keyed(table: Table) -> State {
     let mut state = describing(table);
-    state.ddl.show(StructureTab::Keys);
+    state.ddl.show(StructureTab::Indexes);
     state
 }
 

@@ -45,6 +45,12 @@ pub enum Token {
     /// the emphasis a matched cell spends.
     PrimaryKeyValue,
     ForeignKeyValue,
+    /// Cassandra's: the partition is [`Token::PrimaryKey`], the order within
+    /// it this.
+    ClusteringKey,
+    ClusteringKeyValue,
+    /// Static-ness changes what a write means.
+    StaticColumn,
     RegularColumn,
     Posture(Posture),
     Severity(Severity),

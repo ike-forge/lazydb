@@ -55,13 +55,20 @@ it and stop there.
 | `Column { default, kind }` | `ColumnDefault`, always `Regular` | no default, `Static` or `Regular` |
 | `Index { keys, method, predicate, definition }` | `pg_get_indexdef` | rebuilt `CREATE [CUSTOM] INDEX`, class as `method` |
 | `ForeignKey`, `Constraint` | read | none |
+| `Options` on `Table` and `Schema` | none | table options; keyspace durability and replication, spread one factor a row |
 | `Value` | scalars, `Numeric`, `Array`, `Json` as text | scalars, `Numeric`, `List`, `Set`, `Map`; blobs as `0x…` text |
 | `Statement { sql, kind, engine }` | SQL | CQL |
 | `PagingState` | offset | driver bytes |
 | `Transaction` | probed after writes | always `Idle` |
 
 Dropped in the merge, as one engine's: sequences, functions, partitions;
-replication, table options, table health, traces, the consistency picker.
+table health, traces, the consistency picker.
+
+The Structure panel's tabs are Columns, Indexes (the primary key — split into
+partition and clustering for Cassandra — references, constraints, then the
+other indexes: a key is an index too), Options where the table has any, and
+DDL, highlighted as the editor highlights it. Clustering columns and static
+columns have their own colours (`clustering` role, `accent`).
 
 **Posture gates effects in the domain.** A statement classified as mutating
 on a read-only connection never becomes an `Effect`. Postgres adds a server

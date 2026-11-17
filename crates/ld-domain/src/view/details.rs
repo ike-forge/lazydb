@@ -5,13 +5,15 @@ use std::fmt::Write as _;
 
 use crate::ddl::StructureTab;
 use crate::engine::Engine;
+use crate::model::class_option::{ClassKind, ClassOption, Setting};
 use crate::model::{
-    Catalog, Column, ColumnDefault, Index, PrimaryKey, RelationKind, RelationRef, Schema, Table,
+    Catalog, Column, ColumnDefault, Index, KeyRole, Options, PrimaryKey, RelationKind, RelationRef,
+    Schema, SortOrder, Table,
 };
 use crate::panel::Panel;
 use crate::search::{Direction, Search};
 use crate::state::State;
-use crate::style::Token;
+use crate::style::{Segment, Token};
 use crate::tree::Node;
 
 use super::PanelBody;
@@ -75,9 +77,11 @@ pub enum Group {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DetailRow {
+    /// `order` is a clustering column's.
     KeyColumn {
         name: String,
         data_type: String,
+        order: Option<SortOrder>,
     },
     /// Carries its own kind: nothing above it in the Columns tab says what part
     /// it plays.
@@ -90,13 +94,22 @@ pub enum DetailRow {
         name: String,
         value: String,
     },
+    /// `raw` keeps the reported map: a yank and a search must not be narrowed
+    /// to the abbreviation drawn.
+    ClassProperty {
+        name: String,
+        class: String,
+        settings: Vec<Setting>,
+        raw: String,
+    },
     Identity {
         kind: IdentityKind,
         name: String,
     },
-    /// A line of SQL, drawn and yanked as written.
+    /// A line of SQL or CQL, yanked as written and drawn as highlighted.
     Code {
         text: String,
+        segments: Vec<Segment>,
     },
 }
 
@@ -133,8 +146,11 @@ impl IdentityKind {
 /// addresses the row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnKind {
+    /// Cassandra's partition key is this.
     PrimaryKey,
+    Clustering,
     ForeignKey,
+    Static,
     Regular,
 }
 
@@ -142,25 +158,32 @@ impl ColumnKind {
     /// The one thing marked with a glyph; the rest travels as the token.
     #[must_use]
     pub const fn is_key(self) -> bool {
-        matches!(self, Self::PrimaryKey)
+        matches!(self, Self::PrimaryKey | Self::Clustering)
     }
 
     #[must_use]
     pub const fn token(self) -> Token {
         match self {
             Self::PrimaryKey => Token::PrimaryKey,
+            Self::Clustering => Token::ClusteringKey,
             Self::ForeignKey => Token::ForeignKey,
+            Self::Static => Token::StaticColumn,
             Self::Regular => Token::RegularColumn,
         }
     }
 
     fn of(table: &Table, column: &str) -> Self {
-        if table.is_key(column) {
-            Self::PrimaryKey
-        } else if table.references(column) {
-            Self::ForeignKey
-        } else {
-            Self::Regular
+        match table.key_role(column) {
+            Some(KeyRole::Clustering(_)) => Self::Clustering,
+            Some(_) => Self::PrimaryKey,
+            None if table.references(column) => Self::ForeignKey,
+            None if table
+                .column(column)
+                .is_some_and(|found| found.kind == crate::model::ColumnKind::Static) =>
+            {
+                Self::Static
+            }
+            None => Self::Regular,
         }
     }
 }
@@ -184,11 +207,11 @@ pub(super) fn of(state: &State) -> Option<Details> {
         (Node::Table { namespace, table }, StructureTab::Columns | StructureTab::Summary) => {
             columns_of(catalog.engine, namespace, table)
         }
-        (Node::Table { namespace, table }, StructureTab::Keys) => {
-            keys_of(catalog, namespace, table)
-        }
         (Node::Table { namespace, table }, StructureTab::Indexes) => {
-            indexes_of(catalog.engine, namespace, table)
+            indexes_of(catalog, namespace, table)
+        }
+        (Node::Table { namespace, table }, StructureTab::Options) => {
+            options_of(catalog.engine, namespace, table)
         }
         (Node::Table { namespace, table }, StructureTab::Ddl) => {
             ddl_of(catalog.engine, namespace, table)
@@ -203,10 +226,10 @@ pub(super) fn of(state: &State) -> Option<Details> {
 /// A schema or database has no columns, keys or DDL of its own here: an
 /// empty tab teaches the wrong thing.
 pub(super) fn tabs_for(state: &State) -> &'static [StructureTab] {
-    if describes_a_table(state) {
-        &StructureTab::ALL
-    } else {
-        &[StructureTab::Summary]
+    match selected_table(state) {
+        Some(table) if !table.options.is_empty() => &StructureTab::ALL,
+        Some(_) => &StructureTab::PLAIN,
+        None => &[StructureTab::Summary],
     }
 }
 
@@ -218,13 +241,11 @@ pub(super) fn shown_tab(state: &State) -> StructureTab {
     if tabs.contains(&tab) { tab } else { tabs[0] }
 }
 
-fn describes_a_table(state: &State) -> bool {
-    matches!(
-        state
-            .schema()
-            .and_then(|schema| state.tables.selected(schema)),
-        Some(Node::Table { .. })
-    )
+fn selected_table(state: &State) -> Option<&Table> {
+    match state.tables.selected(state.schema()?)? {
+        Node::Table { table, .. } => Some(table),
+        Node::Schema { .. } | Node::Database { .. } => None,
+    }
 }
 
 fn scrolled(state: &State, details: Details) -> PanelBody {
@@ -251,14 +272,19 @@ impl DetailRow {
     #[must_use]
     pub(crate) fn matches(&self, search: &Search) -> bool {
         match self {
-            Self::KeyColumn { name, data_type }
+            Self::KeyColumn {
+                name, data_type, ..
+            }
             | Self::Column {
                 name, data_type, ..
             } => search.matches(name) || search.matches(data_type),
             Self::Property { name, value } => search.matches(name) || search.matches(value),
+            // Against the reported map: a term the abbreviation dropped is
+            // still in the option.
+            Self::ClassProperty { name, raw, .. } => search.matches(name) || search.matches(raw),
             // Labels are the same on every table and would tell `n` nothing.
             Self::Identity { name, .. } => search.matches(name),
-            Self::Code { text } => search.matches(text),
+            Self::Code { text, .. } => search.matches(text),
         }
     }
 }
@@ -316,6 +342,7 @@ fn key_column(column: &Column) -> DetailRow {
     DetailRow::KeyColumn {
         name: column.name.clone(),
         data_type: column.data_type.clone(),
+        order: None,
     }
 }
 
@@ -323,10 +350,10 @@ fn key_column(column: &Column) -> DetailRow {
 /// row and the clustering that orders it, each clustering column with its
 /// order. The second is empty, so dropped, for SQL.
 fn primary_key_sections(table: &Table) -> [Section; 2] {
-    let section = |heading: &str, rows: Vec<DetailRow>| Section {
-        heading: Some(Heading::new(heading, Token::PrimaryKey)),
+    let section = |heading: &str, token: Token, rows: Vec<DetailRow>| Section {
+        heading: Some(Heading::new(heading, token)),
         group: Group::Shape,
-        token: Some(Token::PrimaryKey),
+        token: Some(token),
         rows,
     };
     let partitioned = table
@@ -335,8 +362,12 @@ fn primary_key_sections(table: &Table) -> [Section; 2] {
         .is_some_and(|key| key.partition().next().is_some());
     if !partitioned {
         return [
-            section("Primary Key", table.key_columns().map(key_column).collect()),
-            section("Clustering Key", Vec::new()),
+            section(
+                "Primary Key",
+                Token::PrimaryKey,
+                table.key_columns().map(key_column).collect(),
+            ),
+            section("Clustering Key", Token::ClusteringKey, Vec::new()),
         ];
     }
 
@@ -350,20 +381,24 @@ fn primary_key_sections(table: &Table) -> [Section; 2] {
     [
         section(
             "Partition Key",
+            Token::PrimaryKey,
             key.clone()
                 .flat_map(PrimaryKey::partition)
                 .map(|name| DetailRow::KeyColumn {
                     name: name.to_owned(),
                     data_type: typed(name),
+                    order: None,
                 })
                 .collect(),
         ),
         section(
             "Clustering Key",
+            Token::ClusteringKey,
             key.flat_map(PrimaryKey::clustering)
                 .map(|(name, order)| DetailRow::KeyColumn {
                     name: name.to_owned(),
-                    data_type: format!("{} {}", typed(name), order.keyword().to_lowercase()),
+                    data_type: typed(name),
+                    order: Some(order),
                 })
                 .collect(),
         ),
@@ -430,36 +465,10 @@ fn settings(heading: &str, rows: Vec<DetailRow>) -> Section {
     }
 }
 
-/// Every constraint: the key leading, references out and in, then the rules
-/// rows are held to.
-fn keys_of(catalog: &Catalog, schema: &Schema, table: &Table) -> Details {
-    let rules = table
-        .constraints
-        .iter()
-        .map(|constraint| {
-            property(
-                format!("{} {}", constraint.kind.label(), constraint.name),
-                constraint.definition.clone(),
-            )
-        })
-        .collect();
-    let [primary, clustering] = primary_key_sections(table);
-    let mut sections = populated([
-        identity(catalog.engine, schema, Some(table)),
-        primary,
-        clustering,
-        foreign_keys_section(table),
-        referenced_by_section(catalog, schema, table),
-        settings("Constraints", rules),
-    ]);
-    if sections.len() == 1 {
-        sections.push(none("Keys", Group::Shape));
-    }
-
-    Details { sections }
-}
-
+/// Highlighted whole, so a statement's names keep their roles across lines.
 fn ddl_of(engine: Engine, schema: &Schema, table: &Table) -> Details {
+    let lines = crate::create::statements(engine, schema, table);
+    let highlighted = crate::sql::highlight(engine, &lines.join("\n"));
     Details {
         sections: populated([
             identity(engine, schema, Some(table)),
@@ -467,9 +476,10 @@ fn ddl_of(engine: Engine, schema: &Schema, table: &Table) -> Details {
                 heading: None,
                 group: Group::Settings,
                 token: None,
-                rows: crate::create::statements(engine, schema, table)
+                rows: lines
                     .into_iter()
-                    .map(|text| DetailRow::Code { text })
+                    .zip(highlighted)
+                    .map(|(text, segments)| DetailRow::Code { text, segments })
                     .collect(),
             },
         ]),
@@ -489,13 +499,63 @@ fn none(heading: &str, group: Group) -> Section {
 
 /// The primary key leads, drawn as the DDL tab draws it, so the tab reads as
 /// one list of ways in. Its backing index is not repeated.
-fn indexes_of(engine: Engine, schema: &Schema, table: &Table) -> Details {
+fn indexes_of(catalog: &Catalog, schema: &Schema, table: &Table) -> Details {
+    let rules = table
+        .constraints
+        .iter()
+        .map(|constraint| {
+            property(
+                format!("{} {}", constraint.kind.label(), constraint.name),
+                constraint.definition.clone(),
+            )
+        })
+        .collect();
     let [primary, clustering] = primary_key_sections(table);
-    let mut sections = populated([identity(engine, schema, Some(table)), primary, clustering]);
+    let mut sections = populated([
+        identity(catalog.engine, schema, Some(table)),
+        primary,
+        clustering,
+        foreign_keys_section(table),
+        referenced_by_section(catalog, schema, table),
+        settings("Constraints", rules),
+    ]);
 
     sections.extend(index_sections(table));
 
     Details { sections }
+}
+
+/// In the layout order [`Options::in_display_order`] keeps.
+fn options_of(engine: Engine, schema: &Schema, table: &Table) -> Details {
+    Details {
+        sections: populated([
+            identity(engine, schema, Some(table)),
+            options_section(&table.options),
+        ]),
+    }
+}
+
+fn options_section(options: &Options) -> Section {
+    settings(
+        "Options",
+        options.in_display_order().map(option_row).collect(),
+    )
+}
+
+/// `compaction` and `compression` read as the class they name and its
+/// settings; anything unknown is drawn as reported.
+fn option_row((name, value): (&str, &str)) -> DetailRow {
+    let parsed = ClassKind::of(name).and_then(|kind| ClassOption::parse(kind, value));
+
+    parsed.map_or_else(
+        || property(name, value),
+        |option| DetailRow::ClassProperty {
+            name: name.to_owned(),
+            class: option.class,
+            settings: option.settings,
+            raw: value.to_owned(),
+        },
+    )
 }
 
 fn index_sections(table: &Table) -> Vec<Section> {
@@ -527,6 +587,7 @@ fn index_rows(table: &Table, index: &Index) -> Vec<DetailRow> {
             .column(key)
             .map(|column| column.data_type.clone())
             .unwrap_or_default(),
+        order: None,
     });
     let traits = [
         index
@@ -629,6 +690,7 @@ fn of_schema(engine: Engine, schema: &Schema) -> Details {
         sections: populated([
             identity(engine, schema, None),
             settings("Contents", contents),
+            options_section(&schema.options),
         ]),
     }
 }
@@ -842,16 +904,21 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_tab_reads_the_key_then_references_out_then_in() {
+    fn the_indexes_tab_reads_the_key_then_references_then_the_other_indexes() {
         assert_eq!(
             headings(&keys(&browsing(order_line()))),
-            ["Primary Key", "Foreign Keys", "Constraints"],
-            "nothing references it, so no Referenced By"
+            [
+                "Primary Key",
+                "Foreign Keys",
+                "Constraints",
+                "order_line_customer_idx"
+            ],
+            "nothing references it, so no Referenced By; the key's own index is the key"
         );
     }
 
     fn keys(state: &State) -> Details {
-        details(&on_tab(state, StructureTab::Keys))
+        details(&on_tab(state, StructureTab::Indexes))
     }
 
     #[test]
@@ -890,13 +957,21 @@ mod tests {
         state.tables.open(&catalog);
 
         let keys = keys(&state);
-        assert_eq!(headings(&keys), ["Partition Key", "Clustering Key"]);
+        assert_eq!(
+            headings(&keys),
+            ["Partition Key", "Clustering Key", "Indexes"]
+        );
         assert_eq!(
             section(&keys, "Clustering Key").rows,
             [DetailRow::KeyColumn {
                 name: "at".to_owned(),
-                data_type: "timestamp desc".to_owned(),
+                data_type: "timestamp".to_owned(),
+                order: Some(SortOrder::Descending),
             }]
+        );
+        assert_eq!(
+            section(&keys, "Clustering Key").token,
+            Some(Token::ClusteringKey)
         );
         assert_eq!(identity_rows(&keys)[0], ("Keyspace", "shop"));
         assert!(details(&state).rows().any(
@@ -912,7 +987,7 @@ mod tests {
         };
 
         assert_eq!(
-            section(&keys(&browsing(bare)), "Keys").rows,
+            section(&keys(&browsing(bare)), "Indexes").rows,
             [property("none", "")]
         );
     }
@@ -925,10 +1000,12 @@ mod tests {
                 DetailRow::KeyColumn {
                     name: "order_id".to_owned(),
                     data_type: "bigint".to_owned(),
+                    order: None,
                 },
                 DetailRow::KeyColumn {
                     name: "line_no".to_owned(),
                     data_type: "integer".to_owned(),
+                    order: None,
                 },
             ]
         );
@@ -977,7 +1054,7 @@ mod tests {
             details
                 .rows()
                 .filter_map(|row| match row {
-                    DetailRow::Code { text } => Some(text.as_str()),
+                    DetailRow::Code { text, .. } => Some(text.as_str()),
                     _ => None,
                 })
                 .collect::<Vec<_>>(),
@@ -1028,17 +1105,6 @@ mod tests {
     }
 
     #[test]
-    fn the_indexes_tab_leads_with_the_key_and_skips_the_index_behind_it() {
-        let details = details(&on_tab(&browsing(order_line()), StructureTab::Indexes));
-
-        assert_eq!(
-            headings(&details),
-            ["Primary Key", "order_line_customer_idx"],
-            "the key is the index every keyed table has, so it reads first, once"
-        );
-    }
-
-    #[test]
     fn an_index_lists_its_keys_its_method_and_its_predicate() {
         let details = details(&on_tab(&browsing(order_line()), StructureTab::Indexes));
 
@@ -1048,10 +1114,12 @@ mod tests {
                 DetailRow::KeyColumn {
                     name: "customer_id".to_owned(),
                     data_type: "bigint".to_owned(),
+                    order: None,
                 },
                 DetailRow::KeyColumn {
                     name: "lower(note)".to_owned(),
                     data_type: String::new(),
+                    order: None,
                 },
                 DetailRow::Property {
                     name: "using".to_owned(),
@@ -1101,8 +1169,37 @@ mod tests {
         let mut state = browsing(order_line());
         state.ddl.show(StructureTab::Columns);
 
-        assert_eq!(tabs_for(&state), StructureTab::ALL);
+        assert_eq!(tabs_for(&state), StructureTab::PLAIN);
         assert_eq!(shown_tab(&state), StructureTab::Columns);
+    }
+
+    #[test]
+    fn only_a_table_with_options_has_an_options_tab_and_it_reads_them_in_layout_order() {
+        let mut table = order_line();
+        table.options = Options::new(
+            [
+                ("comment_like", "x"),
+                ("gc_grace_seconds", "864000"),
+                (
+                    "compaction",
+                    "{class: org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy, max_threshold: 32, min_threshold: 4}",
+                ),
+            ]
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect(),
+        );
+        let mut state = browsing(table);
+        state.ddl.show(StructureTab::Options);
+
+        assert_eq!(tabs_for(&state), StructureTab::ALL);
+        let shown = details(&state);
+        let rows = &section(&shown, "Options").rows;
+        assert_eq!(rows[0], property("gc_grace_seconds", "864000"));
+        assert!(
+            matches!(&rows[2], DetailRow::ClassProperty { class, .. } if class == "SizeTieredCompactionStrategy"),
+            "{rows:?}"
+        );
     }
 
     #[test]
@@ -1174,6 +1271,7 @@ mod tests {
         let column = DetailRow::KeyColumn {
             name: "order_id".to_owned(),
             data_type: "bigint".to_owned(),
+            order: None,
         };
         let property = DetailRow::Property {
             name: "comment".to_owned(),
@@ -1276,7 +1374,7 @@ mod tests {
             details
                 .rows()
                 .filter_map(|row| match row {
-                    DetailRow::Code { text } => Some(text.as_str()),
+                    DetailRow::Code { text, .. } => Some(text.as_str()),
                     _ => None,
                 })
                 .collect::<Vec<_>>(),

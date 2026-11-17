@@ -222,7 +222,7 @@ fn a_click_on_a_tab_focuses_its_panel_and_draws_it() {
 
     assert!(effects.is_empty());
     assert_eq!(state.focus(), Panel::Structure);
-    assert_eq!(state.ddl.tab(), StructureTab::Keys);
+    assert_eq!(state.ddl.tab(), StructureTab::Indexes);
 }
 
 #[test]

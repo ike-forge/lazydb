@@ -179,5 +179,5 @@
 #
 # The roles: base, text, dim, faint, border, focus, selection_bg,
 # crosshair, ranged, selection_fg, selection_bar, shortcut, schema, table,
-# primary_key, foreign_key, column, label, section, accent, match, success,
+# primary_key, foreign_key, clustering, column, label, section, accent, match, success,
 # warning, danger, info, keyword, reference, literal, comment.

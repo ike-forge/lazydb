@@ -22,6 +22,10 @@ LazyPg 0.2.1 renamed (`lp-*` → `ld-*`), then:
    `Engines` router, `Cluster` port renamed `Database`.
 5. **Structure for Cassandra.** Partition and clustering sections, keyspace
    labels, static columns; the grid empties on reconnect.
+6. **Structure tabs.** Keys folded into Indexes; an Options tab for tables
+   that have options, with compaction and compression read as class and
+   settings; keyspace replication one row per factor; clustering and static
+   colours back; DDL highlighted.
 
 ## Phase 2 — More SQL engines
 
@@ -41,9 +45,11 @@ Driver choice is open per engine: it must be pure Rust (conventions.md §1).
 
 - **Staged edits on reconnect.** Connecting elsewhere drops them with the
   grid; a discard prompt, as quitting has, would be kinder.
-- **Postgres fixture race.** `every_value_read_back_spells_a_literal…` and
-  `the_probe_follows_a_transaction…` failed once together under a full
-  parallel run and passed on every rerun; both write `zoo.everything`.
+- **Postgres fixture flakes.** Under a full parallel run,
+  `every_value_read_back_spells_a_literal…` with
+  `the_probe_follows_a_transaction…` (both write `zoo.everything`), and
+  `the_catalog_places_itself_on_a_server…`, each failed once and passed on
+  every rerun. Cause not found.
 - **Cassandra cancellation.** `Effect::Cancel` aborts the task but the
   driver sends no cancel; a superseded read runs to completion server-side.
 - **Exact paging for Postgres** (keyset, portals) and **several connections

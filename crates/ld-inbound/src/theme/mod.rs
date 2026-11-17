@@ -53,6 +53,7 @@ pub(crate) struct Palette {
     pub(crate) table: Color,
     pub(crate) primary_key: Color,
     pub(crate) foreign_key: Color,
+    pub(crate) clustering: Color,
     pub(crate) column: Color,
     pub(crate) label: Color,
     pub(crate) section: Color,
@@ -88,6 +89,7 @@ impl Palette {
             Role::Table => self.table = color,
             Role::PrimaryKey => self.primary_key = color,
             Role::ForeignKey => self.foreign_key = color,
+            Role::Clustering => self.clustering = color,
             Role::Column => self.column = color,
             Role::Label => self.label = color,
             Role::Section => self.section = color,
@@ -202,6 +204,8 @@ impl Theme {
             Token::PrimaryKey => fg(palette.primary_key).add_modifier(Modifier::BOLD),
             Token::PrimaryKeyValue => fg(palette.primary_key),
             Token::ForeignKey | Token::ForeignKeyValue => fg(palette.foreign_key),
+            Token::ClusteringKey | Token::ClusteringKeyValue => fg(palette.clustering),
+            Token::StaticColumn => fg(palette.accent),
             Token::Database | Token::Schema => fg(palette.namespace),
             Token::Table => fg(palette.table),
             Token::RegularColumn => fg(palette.text),
@@ -370,6 +374,7 @@ pub(crate) mod tests {
             table,
             primary_key,
             foreign_key,
+            clustering,
             column,
             label,
             section,
@@ -397,6 +402,7 @@ pub(crate) mod tests {
             ("table", table),
             ("primary_key", primary_key),
             ("foreign_key", foreign_key),
+            ("clustering", clustering),
             ("column", column),
             ("label", label),
             ("section", section),
@@ -662,11 +668,14 @@ pub(crate) mod tests {
     }
 
     /// Every token, so a new one must be decided here.
-    pub(super) const EVERY_TOKEN: [Token; 32] = [
+    pub(super) const EVERY_TOKEN: [Token; 35] = [
         Token::PrimaryKey,
         Token::PrimaryKeyValue,
         Token::ForeignKey,
         Token::ForeignKeyValue,
+        Token::ClusteringKey,
+        Token::ClusteringKeyValue,
+        Token::StaticColumn,
         Token::Database,
         Token::Schema,
         Token::Table,

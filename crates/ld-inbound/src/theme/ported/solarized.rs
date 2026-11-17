@@ -61,6 +61,7 @@ impl Mode {
             table: accent::BLUE,
             primary_key: accent::YELLOW,
             foreign_key: accent::CYAN,
+            clustering: accent::CYAN,
             column: self.body,
             label: self.between,
             section: accent::MAGENTA,

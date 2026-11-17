@@ -41,8 +41,11 @@ absent elsewhere. They will matter again for MySQL, SQL Server and Oracle.
 
 **Out of scope**, because they belong to one engine: query plans
 (`EXPLAIN`), server activity and locks, vacuum and bloat; table health,
-tombstones, compaction, tracing and per-request consistency switching;
-sequences, functions, partitions as objects, replication and table options.
+tombstones, tracing and per-request consistency switching; sequences,
+functions and partitions as objects.
+
+Kept though one engine has them, as the shape of the data: Cassandra's table
+options and keyspace replication, in an Options tab only such tables have.
 
 ## 3. Who it's for
 

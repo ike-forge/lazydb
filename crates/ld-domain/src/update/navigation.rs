@@ -44,14 +44,20 @@ pub(super) fn walk_tab(state: &mut State, step: Step) {
         Panel::Objects | Panel::Contents => return,
     }
 
-    let shown = state.ddl.tab();
-    let candidate = match step {
-        Step::Forward => shown.next(),
-        Step::Back => shown.previous(),
+    // Within the strip drawn, wrapping: Options comes and goes with the
+    // table.
+    let tabs = crate::view::ddl_tabs(state);
+    let shown = crate::view::ddl_shown_tab(state);
+    let Some(at) = tabs.iter().position(|tab| *tab == shown) else {
+        return;
     };
-
-    if crate::view::ddl_tabs(state).contains(&candidate) {
-        state.ddl.show(candidate);
+    let next = match step {
+        Step::Forward => (at + 1) % tabs.len(),
+        Step::Back => (at + tabs.len() - 1) % tabs.len(),
+    };
+    // A one-tab strip keeps the held tab for the table stepped back to.
+    if tabs[next] != shown {
+        state.ddl.show(tabs[next]);
     }
 }
 

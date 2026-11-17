@@ -1,0 +1,13 @@
+# Points LazyPg at LazyDB's Postgres fixture, for side-by-side testing.
+# `mise run db:up` starts it.
+default_connection = "local"
+
+[[connections]]
+name = "local"
+host = "127.0.0.1"
+port = 5433
+database = "lazydb"
+user = "lazydb"
+password = "lazydb"
+sslmode = "disable"
+posture = "writable"

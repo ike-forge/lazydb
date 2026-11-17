@@ -157,7 +157,7 @@ fn tab_steps_ddls_two_tabs_as_separate_stops() {
         Panel::Structure,
         "the cycle has not left the panel yet"
     );
-    assert_eq!(state.ddl.tab(), StructureTab::Keys);
+    assert_eq!(state.ddl.tab(), StructureTab::Indexes);
 }
 
 #[test]
@@ -358,7 +358,7 @@ fn brackets_walk_the_focused_panels_tabs_both_ways() {
     state.focus_on(Panel::Structure);
 
     press(&mut state, Key::Char(']'));
-    assert_eq!(state.ddl.tab(), StructureTab::Keys);
+    assert_eq!(state.ddl.tab(), StructureTab::Indexes);
 
     press(&mut state, Key::Char('['));
     assert_eq!(state.ddl.tab(), StructureTab::Columns);

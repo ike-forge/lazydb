@@ -1,6 +1,7 @@
 //! The vocabulary every engine shares; driver types stop at the adapter
 //! (architecture.md §5).
 
+pub mod class_option;
 pub mod error;
 pub mod ids;
 pub mod input;
@@ -15,7 +16,7 @@ pub use input::{Key, KeyPress, Modifiers};
 pub use page::{Page, PagingState, Row};
 pub use schema::{
     Catalog, Column, ColumnDefault, ColumnKind, Constraint, ConstraintKind, ForeignKey, Index,
-    KeyColumn, KeyRole, PrimaryKey, RelationKind, RelationRef, Schema, SchemaKind, Server,
+    KeyColumn, KeyRole, Options, PrimaryKey, RelationKind, RelationRef, Schema, SchemaKind, Server,
     SortOrder, Table,
 };
 pub use statement::{Statement, StatementKind, UpdatedRow};

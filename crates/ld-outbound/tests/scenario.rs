@@ -428,7 +428,6 @@ async fn walking_the_ddl_strip_reaches_the_indexes_of_the_selected_table() {
     press(&mut state, Key::Char('l'));
     press(&mut state, Key::Char('2'));
     press(&mut state, Key::Char(']'));
-    press(&mut state, Key::Char(']'));
 
     let indexes = ddl_details(&state);
     assert_eq!(
@@ -442,6 +441,7 @@ async fn walking_the_ddl_strip_reaches_the_indexes_of_the_selected_table() {
             DetailRow::KeyColumn {
                 name: "id".to_owned(),
                 data_type: "uuid".to_owned(),
+                order: None,
             },
             DetailRow::Property {
                 name: "using".to_owned(),

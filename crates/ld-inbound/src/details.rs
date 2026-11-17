@@ -4,6 +4,8 @@
 //! column, which ratatui clips.
 
 use ld_domain::grid::BAR;
+use ld_domain::model::SortOrder;
+use ld_domain::model::class_option::Setting;
 use ld_domain::search::Search;
 use ld_domain::style::Token;
 use ld_domain::view::{ColumnKind, DetailRow, Details, Group, IdentityKind};
@@ -21,6 +23,9 @@ const INDENT: usize = 2;
 /// A wrapped value falls to its own line, one step in from the name.
 const TYPE_INDENT: usize = 4;
 const ELLIPSIS: char = '…';
+const ASCENDING: &str = " ↑";
+const DESCENDING: &str = " ↓";
+const BULLET: &str = "· ";
 
 pub(crate) struct Laid {
     pub(crate) lines: Vec<Line<'static>>,
@@ -180,7 +185,11 @@ fn row_lines(
     theme: Theme,
 ) -> Vec<Line<'static>> {
     match row {
-        DetailRow::KeyColumn { name, data_type } => key_column_lines(name, data_type, width)
+        DetailRow::KeyColumn {
+            name,
+            data_type,
+            order,
+        } => key_column_lines(name, *order, data_type, width)
             .into_iter()
             .map(|text| Line::from(crate::highlight::spans(&text, search, style, theme)))
             .collect(),
@@ -192,11 +201,19 @@ fn row_lines(
         DetailRow::Property { name, value } => {
             property_lines(name, value, width, style, search, theme)
         }
+        DetailRow::ClassProperty {
+            name,
+            class,
+            settings,
+            ..
+        } => class_property_lines(name, class, settings, width, style, search, theme),
         DetailRow::Identity { kind, name } => identity_lines(*kind, name, width, search, theme),
-        DetailRow::Code { text } => code_lines(text, width)
-            .into_iter()
-            .map(|text| Line::from(crate::highlight::spans(&text, search, style, theme)))
-            .collect(),
+        DetailRow::Code { segments, .. } => {
+            code_lines(crate::wrap::chars_of(segments, theme), width)
+                .into_iter()
+                .map(|line| crate::wrap::line(line, search, theme))
+                .collect()
+        }
     }
 }
 
@@ -232,25 +249,45 @@ fn identity_lines(
         .collect()
 }
 
-/// The SQL's own indentation is kept; a line too long for the panel wraps two
-/// columns in from it.
-fn code_lines(text: &str, width: usize) -> Vec<String> {
-    let line = format!("{}{text}", " ".repeat(INDENT));
-    if count(&line) <= width {
+/// The statement's own indentation is kept; a line too long for the panel
+/// wraps two columns in from it. Styled per character, so a highlighted
+/// token keeps its colour across the wrap.
+fn code_lines(chars: Vec<(char, Style)>, width: usize) -> Vec<Vec<(char, Style)>> {
+    let blank = (' ', Style::default());
+    let line: Vec<(char, Style)> = std::iter::repeat_n(blank, INDENT).chain(chars).collect();
+    if line.len() <= width {
         return vec![line];
     }
 
-    let rest = text.trim_start();
-    let lead = INDENT + (text.len() - rest.len());
-    let mut lines = crate::wrap::plain(rest, width, lead + 2);
+    let lead = line
+        .iter()
+        .take_while(|(character, _)| character.is_whitespace())
+        .count();
+    let mut lines = crate::wrap::wrap(&line[lead..], width, lead + 2);
     if let Some(first) = lines.first_mut() {
-        first.replace_range(..2, "");
+        first.drain(..2);
     }
     lines
 }
 
-fn key_column_lines(name: &str, data_type: &str, width: usize) -> Vec<String> {
-    laid_out(&format!("{}{name}", " ".repeat(INDENT)), data_type, width)
+/// A clustering column's order follows its name, as `CLUSTERING ORDER BY`
+/// writes it.
+fn key_column_lines(
+    name: &str,
+    order: Option<SortOrder>,
+    data_type: &str,
+    width: usize,
+) -> Vec<String> {
+    let arrow = match order {
+        Some(SortOrder::Ascending) => ASCENDING,
+        Some(SortOrder::Descending) => DESCENDING,
+        None => "",
+    };
+    laid_out(
+        &format!("{}{name}{arrow}", " ".repeat(INDENT)),
+        data_type,
+        width,
+    )
 }
 
 /// The whole row wears the kind's colour: the glyph only says key or not.
@@ -332,6 +369,49 @@ fn property_lines(
         .collect()
 }
 
+/// The class at the margin and its settings faint behind it; too wide, each
+/// wraps as its own block, since a wrapped line carries one style.
+fn class_property_lines(
+    name: &str,
+    class: &str,
+    settings: &[Setting],
+    width: usize,
+    style: Style,
+    search: Option<&Search>,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    let label = theme.style(Token::PropertyName);
+    let faint = theme.style(Token::Faint);
+    let tail = settings
+        .iter()
+        .map(|setting| format!("{BULLET}{} {}", setting.label, setting.value))
+        .collect::<Vec<String>>()
+        .join(" ");
+    let spaced = if tail.is_empty() {
+        String::new()
+    } else {
+        format!(" {tail}")
+    };
+
+    if let Some(gap) = gap_after_name(name, &format!("{class}{spaced}"), width) {
+        let mut spans = name_spans(name, search, label, theme);
+        spans.push(TextSpan::styled(" ".repeat(gap), style));
+        spans.extend(crate::highlight::spans(class, search, style, theme));
+        spans.extend(crate::highlight::spans(&spaced, search, faint, theme));
+        return vec![Line::from(spans)];
+    }
+
+    let block = |text: &str, style: Style| {
+        crate::wrap::plain(text, width, TYPE_INDENT)
+            .into_iter()
+            .map(move |line| Line::from(crate::highlight::spans(&line, search, style, theme)))
+    };
+    std::iter::once(name_line(name, width, search, label, theme))
+        .chain(block(class, style))
+        .chain(block(&tail, faint))
+        .collect()
+}
+
 /// One step in from the heading, where a key column's name sits.
 fn name_spans(
     name: &str,
@@ -392,6 +472,7 @@ fn count(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use ld_domain::selection::{Range, Ranges};
+    use ld_domain::style::Segment;
     use ld_domain::style::Token;
     use ld_domain::view::{Heading, IdentityKind, Section};
 
@@ -412,11 +493,19 @@ mod tests {
         ))
     }
 
+    fn plain_code(text: &str, width: usize) -> Vec<String> {
+        let chars = text.chars().map(|c| (c, Style::default())).collect();
+        code_lines(chars, width)
+            .into_iter()
+            .map(|line| line.into_iter().map(|(c, _)| c).collect())
+            .collect()
+    }
+
     #[test]
     fn a_line_of_sql_keeps_its_indentation_and_wraps_inside_it() {
-        assert_eq!(code_lines("    id bigint,", 30), ["      id bigint,"]);
+        assert_eq!(plain_code("    id bigint,", 30), ["      id bigint,"]);
         assert_eq!(
-            code_lines("    CONSTRAINT fk FOREIGN KEY (a) REFERENCES t (b)", 30),
+            plain_code("    CONSTRAINT fk FOREIGN KEY (a) REFERENCES t (b)", 30),
             [
                 "      CONSTRAINT fk FOREIGN",
                 "        KEY (a) REFERENCES t",
@@ -426,9 +515,61 @@ mod tests {
     }
 
     #[test]
+    fn a_wrapped_keyword_keeps_its_colour_on_the_next_line() {
+        let theme = Theme::default();
+        let segments = [
+            Segment::plain("    CONSTRAINT fk "),
+            Segment::styled("REFERENCES", Token::Keyword),
+        ];
+        let lines: Vec<Line<'static>> = code_lines(crate::wrap::chars_of(&segments, theme), 24)
+            .into_iter()
+            .map(|line| crate::wrap::line(line, None, theme))
+            .collect();
+
+        let keyword = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("REFERENCES"))
+            .expect("wrapped onto the second line");
+        assert_eq!(keyword.style.fg, theme.style(Token::Keyword).fg);
+    }
+
+    #[test]
+    fn a_clustering_column_shows_its_order_after_its_name() {
+        assert_eq!(
+            key_column_lines("at", Some(SortOrder::Descending), "timestamp", 23),
+            ["  at ↓        timestamp"]
+        );
+    }
+
+    #[test]
+    fn a_class_option_puts_its_class_at_the_margin_and_its_settings_faint_behind() {
+        let theme = Theme::default();
+        let settings = [Setting {
+            label: "max",
+            value: "32".to_owned(),
+        }];
+        let lines = class_property_lines(
+            "compaction",
+            "STCS",
+            &settings,
+            40,
+            Style::default(),
+            None,
+            theme,
+        );
+
+        assert_eq!(texts(&lines), ["  compaction               STCS · max 32"]);
+        assert_eq!(
+            lines[0].spans.last().map(|span| span.style.fg),
+            Some(theme.style(Token::Faint).fg)
+        );
+    }
+
+    #[test]
     fn a_column_puts_its_type_at_the_right_margin() {
         assert_eq!(
-            key_column_lines("customer_id", "uuid", 23),
+            key_column_lines("customer_id", None, "uuid", 23),
             ["  customer_id      uuid"]
         );
     }
@@ -436,7 +577,7 @@ mod tests {
     #[test]
     fn a_column_too_wide_for_one_line_drops_its_type_beneath_the_name() {
         assert_eq!(
-            key_column_lines("warehouse_identifier", "frozen<list<text>>", 23),
+            key_column_lines("warehouse_identifier", None, "frozen<list<text>>", 23),
             ["  warehouse_identifier", "    frozen<list<text>>"]
         );
     }
@@ -730,6 +871,7 @@ mod tests {
                     rows: vec![DetailRow::KeyColumn {
                         name: "customer_id".to_owned(),
                         data_type: "uuid".to_owned(),
+                        order: None,
                     }],
                 },
                 Section {

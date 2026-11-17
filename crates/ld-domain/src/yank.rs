@@ -114,15 +114,23 @@ pub fn grid_column(rows: &[Row], column: usize) -> String {
 pub fn detail_row(row: &DetailRow) -> String {
     let fields = match row {
         // SQL, pasted as written: CSV quoting would break it.
-        DetailRow::Code { text } => return text.clone(),
+        DetailRow::Code { text, .. } => return text.clone(),
         DetailRow::Identity { kind, name } => vec![kind.label().to_owned(), name.clone()],
-        DetailRow::KeyColumn { name, data_type } => vec![name.clone(), data_type.clone()],
+        DetailRow::KeyColumn {
+            name,
+            data_type,
+            order,
+        } => std::iter::once(name.clone())
+            .chain(std::iter::once(data_type.clone()))
+            .chain(order.map(|order| order.keyword().to_lowercase()))
+            .collect(),
         DetailRow::Column {
             name,
             data_type,
             kind,
         } => vec![name.clone(), data_type.clone(), part(*kind).to_owned()],
         DetailRow::Property { name, value } => vec![name.clone(), value.clone()],
+        DetailRow::ClassProperty { name, raw, .. } => vec![name.clone(), raw.clone()],
     };
 
     line(&fields)
@@ -197,7 +205,9 @@ fn value(value: &Value) -> String {
 const fn part(kind: ColumnKind) -> &'static str {
     match kind {
         ColumnKind::PrimaryKey => "primary key",
+        ColumnKind::Clustering => "clustering key",
         ColumnKind::ForeignKey => "foreign key",
+        ColumnKind::Static => "static",
         ColumnKind::Regular => "regular",
     }
 }
@@ -392,6 +402,7 @@ mod tests {
         let key = DetailRow::KeyColumn {
             name: "id".to_owned(),
             data_type: "uuid".to_owned(),
+            order: None,
         };
 
         assert_eq!(detail_row(&key), "id,uuid");

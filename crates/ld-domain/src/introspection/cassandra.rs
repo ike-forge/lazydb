@@ -1,9 +1,11 @@
 //! `system_schema`, which every keyspace's metadata lives in. Each table is
 //! read whole: CQL filters on a partition key, and these are small.
 
-pub const KEYSPACES: &str = "SELECT keyspace_name FROM system_schema.keyspaces";
+/// `*` here and for tables and views: their option columns differ across
+/// majors, so naming them would fail on some clusters.
+pub const KEYSPACES: &str = "SELECT * FROM system_schema.keyspaces";
 
-pub const TABLES: &str = "SELECT keyspace_name, table_name, comment FROM system_schema.tables";
+pub const TABLES: &str = "SELECT * FROM system_schema.tables";
 
 /// `position` orders a key's columns; `clustering_order` is `asc`, `desc` or
 /// `none`.
@@ -14,8 +16,7 @@ pub const COLUMNS: &str = "SELECT keyspace_name, table_name, column_name, kind, 
 pub const INDEXES: &str =
     "SELECT keyspace_name, table_name, index_name, kind, options FROM system_schema.indexes";
 
-pub const VIEWS: &str = "SELECT keyspace_name, view_name, base_table_name, where_clause, \
-                         comment FROM system_schema.views";
+pub const VIEWS: &str = "SELECT * FROM system_schema.views";
 
 pub const ALL: [(&str, &str); 5] = [
     ("keyspaces", KEYSPACES),

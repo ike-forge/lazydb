@@ -13,8 +13,8 @@ the engines' own tools.
 
 - **See the structure.** Postgres databases and schemas, Cassandra keyspaces;
   tables, views and materialized views; columns, primary key (partition and
-  clustering for Cassandra), foreign keys, indexes and DDL for the selected
-  table.
+  clustering for Cassandra), foreign keys, indexes, highlighted DDL, and
+  Cassandra's table options and replication.
 - **Write SQL or CQL with context.** The editor speaks the connection's
   language: schema-aware completion, highlighting, formatting, `$EDITOR`,
   per-connection history and a session log.

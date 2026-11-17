@@ -16,8 +16,8 @@ use ld_domain::config::{
 use ld_domain::connection::Transaction;
 use ld_domain::introspection::cassandra::{COLUMNS, INDEXES, KEYSPACES, TABLES, VIEWS};
 use ld_domain::model::{
-    Catalog, Column, ColumnKind, ConnId, DbError, Index, KeyColumn, KeyRole, Page, PagingState,
-    PrimaryKey, RelationKind, Row, Schema, SortOrder, Statement, Table,
+    Catalog, Column, ColumnKind, ConnId, DbError, Index, KeyColumn, KeyRole, Options, Page,
+    PagingState, PrimaryKey, RelationKind, Row, Schema, SortOrder, Statement, Table, Value,
 };
 use ld_domain::ports::Database;
 use ld_domain::posture::Posture;
@@ -234,16 +234,8 @@ impl Database for Cassandra {
         let collect = |error: scylla::errors::RowsError| DbError::Other(error.to_string());
 
         let rows = Rows {
-            keyspaces: keyspaces
-                .rows::<(String,)>()
-                .map_err(collect)?
-                .map(|row| row.map(|(name,)| name).map_err(other))
-                .collect::<Result<_, _>>()?,
-            tables: tables
-                .rows::<(String, String, Option<String>)>()
-                .map_err(collect)?
-                .collect::<Result<_, _>>()
-                .map_err(other)?,
+            keyspaces: named(&keyspaces)?,
+            tables: named(&tables)?,
             columns: columns
                 .rows::<(String, String, String, String, i32, String, String)>()
                 .map_err(collect)?
@@ -283,20 +275,7 @@ impl Database for Cassandra {
                     .map_err(other)
                 })
                 .collect::<Result<_, _>>()?,
-            views: views
-                .rows::<(String, String, String, Option<String>, Option<String>)>()
-                .map_err(collect)?
-                .map(|row| {
-                    row.map(|(keyspace, name, base, filter, comment)| ViewRow {
-                        keyspace,
-                        name,
-                        base,
-                        filter,
-                        comment,
-                    })
-                    .map_err(other)
-                })
-                .collect::<Result<_, _>>()?,
+            views: named(&views)?,
         };
 
         Ok(catalog(rows))
@@ -351,6 +330,28 @@ impl Database for Cassandra {
     }
 }
 
+/// A `SELECT *` row by column name: the option columns differ across majors,
+/// so naming them would fail on some clusters.
+fn named(result: &scylla::response::query_result::QueryRowsResult) -> Result<Vec<Named>, DbError> {
+    let names: Vec<String> = result
+        .column_specs()
+        .iter()
+        .map(|spec| spec.name().to_owned())
+        .collect();
+    result
+        .rows::<DriverRow>()
+        .map_err(|error| DbError::Other(error.to_string()))?
+        .map(|row| {
+            let row = row.map_err(|error| DbError::Other(error.to_string()))?;
+            Ok(names
+                .iter()
+                .cloned()
+                .zip(row.columns.iter().map(|value| to_value(value.as_ref())))
+                .collect())
+        })
+        .collect()
+}
+
 fn to_page(result: scylla::response::query_result::QueryResult) -> Result<Page, DbError> {
     use scylla::response::query_result::IntoRowsResultError;
 
@@ -386,16 +387,71 @@ fn to_page(result: scylla::response::query_result::QueryResult) -> Result<Page, 
     })
 }
 
+type Named = BTreeMap<String, Value>;
+
 /// `system_schema`'s rows, as read. Kept apart from the session so the
 /// mapping tests without a cluster.
 #[derive(Debug, Default)]
 struct Rows {
-    keyspaces: Vec<String>,
-    /// Keyspace, table, comment.
-    tables: Vec<(String, String, Option<String>)>,
+    keyspaces: Vec<Named>,
+    tables: Vec<Named>,
     columns: Vec<ColumnRow>,
     indexes: Vec<IndexRow>,
-    views: Vec<ViewRow>,
+    views: Vec<Named>,
+}
+
+fn text(row: &Named, column: &str) -> String {
+    match row.get(column) {
+        Some(Value::Text(text)) => text.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Every column but the ones that name the object or are drawn elsewhere, as
+/// the grid renders a cell. An empty string draws as `''`, or `speculative_retry`
+/// reads as broken.
+fn options(row: &Named, skipped: &[&str]) -> Options {
+    Options::new(
+        row.iter()
+            .filter(|(name, _)| !skipped.contains(&name.as_str()))
+            .map(|(name, value)| {
+                let text = ld_domain::cell::text(value);
+                (
+                    name.clone(),
+                    if text.is_empty() {
+                        "''".to_owned()
+                    } else {
+                        text
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Replication's map spread into rows, as cqlsh's `DESCRIBE` reads it: the
+/// strategy by its short name, then each factor.
+fn keyspace_options(row: &Named) -> Options {
+    let mut options = options(row, &["keyspace_name", "replication"]);
+    if let Some(Value::Map(entries)) = row.get("replication") {
+        let mut by_name = std::collections::BTreeMap::new();
+        for (key, value) in entries {
+            let key = ld_domain::cell::text(key);
+            let value = ld_domain::cell::text(value);
+            let value = if key == "class" {
+                value.rsplit('.').next().unwrap_or(&value).to_owned()
+            } else {
+                value
+            };
+            by_name.insert(format!("replication.{key}"), value);
+        }
+        options = options.with(by_name);
+    }
+    options
+}
+
+fn comment(row: &Named) -> Option<String> {
+    Some(text(row, "comment")).filter(|comment| !comment.is_empty())
 }
 
 #[derive(Debug)]
@@ -421,13 +477,11 @@ struct IndexRow {
     options: BTreeMap<String, String>,
 }
 
-#[derive(Debug)]
-struct ViewRow {
+struct View {
     keyspace: String,
     name: String,
     base: String,
     filter: Option<String>,
-    comment: Option<String>,
 }
 
 /// A table whose columns raced a DDL change between the reads has no key, and
@@ -436,7 +490,14 @@ fn catalog(rows: Rows) -> Catalog {
     let mut schemas: BTreeMap<String, Schema> = rows
         .keyspaces
         .iter()
-        .map(|name| (name.clone(), Schema::new(Engine::Cassandra, name)))
+        .map(|row| {
+            let name = text(row, "keyspace_name");
+            let schema = Schema {
+                options: keyspace_options(row),
+                ..Schema::new(Engine::Cassandra, &name)
+            };
+            (name, schema)
+        })
         .collect();
 
     let mut columns: BTreeMap<(String, String), Vec<ColumnRow>> = BTreeMap::new();
@@ -454,11 +515,12 @@ fn catalog(rows: Rows) -> Catalog {
             .push(row);
     }
 
-    for (keyspace, name, comment) in rows.tables {
-        let key = (keyspace, name);
+    for row in rows.tables {
+        let key = (text(&row, "keyspace_name"), text(&row, "table_name"));
         let table = Table {
             name: key.1.clone(),
-            comment: comment.filter(|comment| !comment.is_empty()),
+            comment: comment(&row),
+            options: options(&row, &["keyspace_name", "table_name", "comment"]),
             indexes: indexes
                 .remove(&key)
                 .unwrap_or_default()
@@ -472,7 +534,13 @@ fn catalog(rows: Rows) -> Catalog {
         }
     }
 
-    for view in rows.views {
+    for row in rows.views {
+        let view = View {
+            keyspace: text(&row, "keyspace_name"),
+            name: text(&row, "view_name"),
+            base: text(&row, "base_table_name"),
+            filter: Some(text(&row, "where_clause")),
+        };
         let key = (view.keyspace.clone(), view.name.clone());
         let shaped = shape(columns.get(&key).map_or(&[][..], Vec::as_slice));
         let selected: Vec<String> = shaped
@@ -492,7 +560,19 @@ fn catalog(rows: Rows) -> Catalog {
         let table = Table {
             name: view.name.clone(),
             kind: RelationKind::MaterializedView,
-            comment: view.comment.filter(|comment| !comment.is_empty()),
+            comment: comment(&row),
+            options: options(
+                &row,
+                &[
+                    "keyspace_name",
+                    "view_name",
+                    "base_table_name",
+                    "base_table_id",
+                    "where_clause",
+                    "include_all_columns",
+                    "comment",
+                ],
+            ),
             definition: Some(definition),
             ..shaped
         };
@@ -635,10 +715,65 @@ mod tests {
         }
     }
 
+    fn named(pairs: &[(&str, &str)]) -> Named {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), Value::Text((*value).to_owned())))
+            .collect()
+    }
+
+    #[test]
+    fn options_are_every_column_but_the_names_and_the_comment() {
+        let catalog = catalog(readings());
+        let options = &catalog.schemas["iot"].tables["readings"].options;
+
+        assert_eq!(
+            options.in_display_order().collect::<Vec<_>>(),
+            [("gc_grace_seconds", "864000"), ("speculative_retry", "''")]
+        );
+        assert_eq!(
+            catalog.schemas["iot"]
+                .options
+                .in_display_order()
+                .collect::<Vec<_>>(),
+            [
+                ("replication.class", "SimpleStrategy"),
+                ("replication.replication_factor", "1"),
+            ]
+        );
+    }
+
     fn readings() -> Rows {
         Rows {
-            keyspaces: vec!["iot".to_owned(), "system".to_owned()],
-            tables: vec![("iot".to_owned(), "readings".to_owned(), Some(String::new()))],
+            keyspaces: vec![
+                {
+                    let mut iot = named(&[("keyspace_name", "iot")]);
+                    iot.insert(
+                        "replication".to_owned(),
+                        Value::Map(vec![
+                            (
+                                Value::Text("class".to_owned()),
+                                Value::Text(
+                                    "org.apache.cassandra.locator.SimpleStrategy".to_owned(),
+                                ),
+                            ),
+                            (
+                                Value::Text("replication_factor".to_owned()),
+                                Value::Text("1".to_owned()),
+                            ),
+                        ]),
+                    );
+                    iot
+                },
+                named(&[("keyspace_name", "system")]),
+            ],
+            tables: vec![named(&[
+                ("keyspace_name", "iot"),
+                ("table_name", "readings"),
+                ("comment", ""),
+                ("gc_grace_seconds", "864000"),
+                ("speculative_retry", ""),
+            ])],
             columns: vec![
                 column("readings", "temp", "regular", -1, "float"),
                 column("readings", "at", "clustering", 0, "timestamp"),
@@ -661,13 +796,13 @@ mod tests {
                     ),
                 ]),
             }],
-            views: vec![ViewRow {
-                keyspace: "iot".to_owned(),
-                name: "by_temp".to_owned(),
-                base: "readings".to_owned(),
-                filter: Some("temp IS NOT NULL".to_owned()),
-                comment: None,
-            }],
+            views: vec![named(&[
+                ("keyspace_name", "iot"),
+                ("view_name", "by_temp"),
+                ("base_table_name", "readings"),
+                ("where_clause", "temp IS NOT NULL"),
+                ("comment", ""),
+            ])],
         }
     }
 

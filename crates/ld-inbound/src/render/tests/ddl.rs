@@ -71,10 +71,16 @@ fn indexing(table: Table) -> State {
 
 #[test]
 fn the_indexes_tab_draws_the_primary_key_and_a_block_per_index() {
-    let buffer = draw_state(104, 41, &indexing(indexed()));
+    // Without references or rules, which the test below draws.
+    let table = Table {
+        foreign_keys: Vec::new(),
+        constraints: Vec::new(),
+        ..indexed()
+    };
+    let buffer = draw_state(104, 41, &indexing(table));
 
     assert_eq!(
-        ddl_rows(&buffer)[..18],
+        ddl_rows(&buffer)[..16],
         [
             "▌  \u{f084} Schema         shop",
             "   \u{f0ce} Table",
@@ -94,8 +100,6 @@ fn the_indexes_tab_draws_the_primary_key_and_a_block_per_index() {
             "     (status <>",
             "     'done'::text)",
             "\u{f002} orders_by_tag",
-            "   tags           text[]",
-            "   using             gin",
         ]
     );
 }
@@ -105,7 +109,7 @@ fn a_table_with_no_index_says_so_rather_than_showing_an_empty_block() {
     let buffer = draw_state(104, 41, &indexing(orders()));
 
     assert_eq!(
-        ddl_rows(&buffer)[8..11],
+        ddl_rows(&buffer)[16..19],
         ["", "\u{f002} Indexes", "   none"]
     );
 }
@@ -238,14 +242,11 @@ fn the_narrowest_sidebar_gives_its_border_to_the_title_alone() {
 
 #[test]
 fn a_border_wide_enough_names_every_tab_and_fades_the_ones_not_drawn() {
-    // 152 columns: a 38-column sidebar holds all four full names.
+    // 152 columns: a 38-column sidebar holds every full name.
     let buffer = draw_state(152, 41, &describing(orders()));
     let border = row(&buffer, top_border(&buffer, "Columns").1);
 
-    assert!(
-        border.contains("Columns - Keys - Indexes - DDL"),
-        "got {border:?}"
-    );
+    assert!(border.contains("Columns - Indexes - DDL"), "got {border:?}");
 
     let (fg, _, modifier) = style_of_first(&buffer, "ndexes");
     let faint = Theme::default().style(Token::Faint);
@@ -256,11 +257,11 @@ fn a_border_wide_enough_names_every_tab_and_fades_the_ones_not_drawn() {
 
 #[test]
 fn a_sidebar_on_its_usual_width_still_names_every_tab() {
-    // A 30-column sidebar: short names, not three dropped tabs.
+    // A 30-column sidebar: short names, not dropped tabs.
     let buffer = draw_state(120, 41, &listing(orders()));
     let border = row(&buffer, top_border(&buffer, "Col").1);
 
-    assert!(border.contains("Col - Key - Idx - DDL"), "got {border:?}");
+    assert!(border.contains("Col - Idx - DDL"), "got {border:?}");
 }
 
 #[test]
@@ -275,7 +276,7 @@ fn a_border_too_narrow_for_either_strip_keeps_the_tab_it_is_drawing_whole() {
 }
 
 #[test]
-fn the_keys_tab_draws_the_key_then_the_references_then_the_rules() {
+fn the_indexes_tab_draws_the_key_then_the_references_then_the_rules() {
     let buffer = draw_state(104, 41, &keyed(orders()));
 
     assert_eq!(
@@ -304,7 +305,11 @@ fn the_keys_tab_draws_the_key_then_the_references_then_the_rules() {
             "     '2020-01-01')",
         ]
     );
-    assert!(ddl_rows(&buffer)[16..].iter().all(String::is_empty));
+    assert_eq!(
+        ddl_rows(&buffer)[17],
+        "\u{f002} Indexes",
+        "then the indexes"
+    );
 }
 
 #[test]

@@ -11,47 +11,27 @@ use crate::viewport::{Cursor, Scroll};
 pub enum StructureTab {
     #[default]
     Columns,
-    /// Every constraint: the key, references both ways, unique, check and
-    /// exclusion.
-    Keys,
+    /// Every way in: the primary key (a primary key is an index too),
+    /// references both ways, constraints, then the indexes.
     Indexes,
+    /// Only where the table has options, which is Cassandra.
+    Options,
     Ddl,
     Summary,
 }
 
 impl StructureTab {
     /// A relation's, in strip order.
-    pub const ALL: [Self; 4] = [Self::Columns, Self::Keys, Self::Indexes, Self::Ddl];
-
-    /// No key per tab: `]` and `[` walk them.
-    #[must_use]
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Columns => Self::Keys,
-            Self::Keys => Self::Indexes,
-            Self::Indexes => Self::Ddl,
-            Self::Ddl => Self::Columns,
-            Self::Summary => Self::Summary,
-        }
-    }
-
-    #[must_use]
-    pub const fn previous(self) -> Self {
-        match self {
-            Self::Columns => Self::Ddl,
-            Self::Keys => Self::Columns,
-            Self::Indexes => Self::Keys,
-            Self::Ddl => Self::Indexes,
-            Self::Summary => Self::Summary,
-        }
-    }
+    pub const ALL: [Self; 4] = [Self::Columns, Self::Indexes, Self::Options, Self::Ddl];
+    /// A relation's without options.
+    pub const PLAIN: [Self; 3] = [Self::Columns, Self::Indexes, Self::Ddl];
 
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Columns => "Columns",
-            Self::Keys => "Keys",
             Self::Indexes => "Indexes",
+            Self::Options => "Options",
             Self::Ddl => "DDL",
             // The panel's own name: a schema's or database's one tab is the
             // whole panel.
@@ -65,8 +45,8 @@ impl StructureTab {
     pub const fn short_label(self) -> &'static str {
         match self {
             Self::Columns => "Col",
-            Self::Keys => "Key",
             Self::Indexes => "Idx",
+            Self::Options => "Opt",
             Self::Ddl => "DDL",
             Self::Summary => "Structure",
         }
@@ -128,27 +108,12 @@ mod tests {
     }
 
     #[test]
-    fn walking_the_tabs_wraps_and_stepping_back_undoes_it() {
-        for tab in StructureTab::ALL {
-            assert_eq!(tab.next().previous(), tab);
-        }
-
-        assert_eq!(
-            std::iter::successors(Some(StructureTab::ALL[0]), |tab| Some(tab.next()))
-                .take(StructureTab::ALL.len())
-                .collect::<Vec<_>>(),
-            StructureTab::ALL,
-            "one press per tab returns to where it started"
-        );
-    }
-
-    #[test]
     fn showing_a_tab_draws_it() {
         let mut panel = DdlPanel::default();
 
-        panel.show(StructureTab::Keys);
+        panel.show(StructureTab::Indexes);
 
-        assert_eq!(panel.tab(), StructureTab::Keys);
+        assert_eq!(panel.tab(), StructureTab::Indexes);
     }
 
     #[test]
@@ -157,7 +122,7 @@ mod tests {
         panel.cursor.go_to(4, 8);
         panel.scroll.down(40, 10);
 
-        panel.show(StructureTab::Keys);
+        panel.show(StructureTab::Indexes);
 
         assert_eq!(panel.cursor.index(), 0);
         assert_eq!(panel.scroll.offset(), 0);
@@ -182,7 +147,7 @@ mod tests {
         panel.selection.start(1);
         panel.selection.stop(3);
 
-        panel.show(StructureTab::Keys);
+        panel.show(StructureTab::Indexes);
 
         assert!(!panel.selection.is_active());
     }
@@ -204,7 +169,7 @@ mod tests {
         let mut panel = DdlPanel::default();
         panel.set_search(Search::new("id"));
 
-        panel.show(StructureTab::Keys);
+        panel.show(StructureTab::Indexes);
 
         assert_eq!(panel.search().map(Search::as_str), Some("id"));
     }

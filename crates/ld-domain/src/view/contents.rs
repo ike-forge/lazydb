@@ -11,7 +11,7 @@ use crate::contents::{
 };
 use crate::engine::Engine;
 use crate::inspect::{Inspected, Inspector};
-use crate::model::{Catalog, Value};
+use crate::model::{Catalog, ColumnKind, KeyRole, Value};
 use crate::panel::Panel;
 use crate::search::Search;
 use crate::selection::Ranges;
@@ -325,6 +325,7 @@ const fn key_token(column: Option<Token>) -> Option<Token> {
     match column {
         Some(Token::PrimaryKey) => Some(Token::PrimaryKeyValue),
         Some(Token::ForeignKey) => Some(Token::ForeignKeyValue),
+        Some(Token::ClusteringKey) => Some(Token::ClusteringKeyValue),
         _ => None,
     }
 }
@@ -337,14 +338,13 @@ fn column_token(schema: Option<&Catalog>, table: Option<&TableRef>, column: &str
         .and_then(|schema| schema.schemas.get(&table.namespace))
         .and_then(|namespace| namespace.tables.get(&table.table))?;
 
-    if found.is_key(column) {
-        Some(Token::PrimaryKey)
-    } else if found.references(column) {
-        Some(Token::ForeignKey)
-    } else if found.column(column).is_some() {
-        Some(Token::RegularColumn)
-    } else {
-        None
+    match (found.key_role(column), found.column(column)) {
+        (Some(KeyRole::Clustering(_)), _) => Some(Token::ClusteringKey),
+        (Some(_), _) => Some(Token::PrimaryKey),
+        (None, _) if found.references(column) => Some(Token::ForeignKey),
+        (None, Some(found)) if found.kind == ColumnKind::Static => Some(Token::StaticColumn),
+        (None, Some(_)) => Some(Token::RegularColumn),
+        (None, None) => None,
     }
 }
 
