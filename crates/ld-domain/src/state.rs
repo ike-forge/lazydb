@@ -245,7 +245,8 @@ impl State {
     /// The wait belongs to the panel its result fills: Queries' statements land
     /// in Contents. Queries itself waits on its trail, so the Logs tab animates
     /// every pending entry except connecting and the catalog read, which fill
-    /// Objects.
+    /// Objects. On the SQL tab the trail is out of sight, and a second loader
+    /// beside Contents' only doubled it.
     #[must_use]
     pub fn is_working_in(&self, panel: Panel) -> bool {
         match panel {
@@ -259,14 +260,17 @@ impl State {
                 | ConnectionState::Failed(_) => false,
             },
             Panel::Contents => !self.in_flight.is_empty(),
-            Panel::Queries => self.log.entries().any(|entry| {
-                matches!(
-                    entry.outcome(),
-                    Outcome::Pending {
-                        trace: Trace::Query(_) | Trace::Export(_)
-                    }
-                )
-            }),
+            Panel::Queries => {
+                self.queries.tab() == QueriesTab::Logs
+                    && self.log.entries().any(|entry| {
+                        matches!(
+                            entry.outcome(),
+                            Outcome::Pending {
+                                trace: Trace::Query(_) | Trace::Export(_)
+                            }
+                        )
+                    })
+            }
             Panel::Structure => false,
         }
     }

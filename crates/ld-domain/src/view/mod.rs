@@ -751,6 +751,7 @@ mod tests {
     #[test]
     fn the_queries_panel_animates_while_the_trail_holds_a_pending_entry() {
         let mut state = loaded(&["shop"]);
+        state.queries.show(crate::queries::QueriesTab::Logs);
         state.log.push(crate::log::Entry::new(
             Stamp::default(),
             crate::log::Subject::Sentence("SELECT".to_owned()),
@@ -772,8 +773,27 @@ mod tests {
     }
 
     #[test]
+    fn the_queries_panel_rests_on_the_sql_tab_while_a_query_is_pending() {
+        let mut state = loaded(&["shop"]);
+        state.log.push(crate::log::Entry::new(
+            Stamp::default(),
+            crate::log::Subject::Sentence("SELECT".to_owned()),
+            crate::log::Outcome::Pending {
+                trace: crate::log::Trace::Query(QueryId::next()),
+            },
+        ));
+
+        assert_eq!(
+            view_model(&state).panels[3].activity,
+            Activity::Resting,
+            "the pending entry is on the Logs tab; Contents already shows the wait"
+        );
+    }
+
+    #[test]
     fn the_queries_panel_rests_again_once_its_last_pending_entry_completes() {
         let mut state = loaded(&["shop"]);
+        state.queries.show(crate::queries::QueriesTab::Logs);
         let query = QueryId::next();
         state.log.push(crate::log::Entry::new(
             Stamp::default(),
