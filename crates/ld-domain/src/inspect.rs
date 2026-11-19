@@ -451,7 +451,7 @@ impl Inspector {
     pub fn yank(&self) -> Option<String> {
         match &self.inspected {
             Inspected::Cell { value, .. } if self.entries.is_active() => {
-                let held = self.entries.ranges(self.cursor);
+                let (held, _) = self.extent();
                 Some(crate::yank::lines(
                     lines(value)
                         .into_iter()
@@ -471,20 +471,45 @@ impl Inspector {
                         values: vec![Value::Text(name.clone()), value.clone()],
                     })
                     .collect();
-                let entries = self.entries.spanned(self.field_at_cursor());
-                let strips = self.strips.spanned(self.strip.index());
-                let both = Ranges::of(Range::new(0, Strip::COUNT - 1));
+                let (entries, strips) = self.extent();
 
                 match self.mode {
-                    SelectionMode::Row => Some(crate::yank::grid_block(&table, &entries, &both)),
                     SelectionMode::Column => Some(crate::yank::grid_columns(&table, &strips)),
                     SelectionMode::Cell if entries.rows() == 1 && strips.rows() == 1 => {
                         let row = table.get(entries.first()?.first())?;
                         crate::yank::grid_cell(row.values.get(strips.first()?.first())?)
                     }
-                    SelectionMode::Cell => Some(crate::yank::grid_block(&table, &entries, &strips)),
+                    SelectionMode::Row | SelectionMode::Cell => {
+                        Some(crate::yank::grid_block(&table, &entries, &strips))
+                    }
                 }
             }
+        }
+    }
+
+    /// What `y` takes, as (entries, strips), both axes spelled out: the flash
+    /// lights exactly this.
+    #[must_use]
+    pub fn extent(&self) -> (Ranges, Ranges) {
+        let whole = |len: usize| Ranges::of(Range::new(0, len.saturating_sub(1)));
+        let value = Ranges::of(Range::new(Strip::Value.index(), Strip::Value.index()));
+
+        if !self.is_row() {
+            let lines = if self.entries.is_active() {
+                self.entries.ranges(self.cursor)
+            } else {
+                whole(self.line_count())
+            };
+            return (lines, value);
+        }
+
+        let entries = self.entries.spanned(self.field_at_cursor());
+        let strips = self.strips.spanned(self.strip.index());
+
+        match self.mode {
+            SelectionMode::Row => (entries, whole(Strip::COUNT)),
+            SelectionMode::Column => (whole(self.field_count()), strips),
+            SelectionMode::Cell => (entries, strips),
         }
     }
 

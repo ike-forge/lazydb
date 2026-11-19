@@ -206,6 +206,8 @@ pub struct InspectView {
     /// ignores, as a grid's ranges are.
     pub entries: Ranges,
     pub strips: Ranges,
+    /// `entries` and `strips` are what a yank just took, not a selection.
+    pub flash: bool,
     pub search: Option<Search>,
     pub sift: Option<SiftView>,
     /// Drawn over the block.
@@ -520,7 +522,10 @@ pub enum PanelBody {
 /// It cannot contend with a selection: the yank spent it, and the next input
 /// ends the flash.
 fn flash_over(state: &State, panel: Panel) -> Option<&crate::feedback::Flash> {
-    state.flash.as_ref().filter(|flash| flash.panel() == panel)
+    state
+        .flash
+        .as_ref()
+        .filter(|flash| flash.lit_over() == crate::feedback::Lit::Panel(panel))
 }
 
 #[must_use]

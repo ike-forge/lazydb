@@ -1,6 +1,7 @@
 //! The cell inspector.
 
 use crate::contents::{ContentsState, SelectionMode};
+use crate::feedback::{Flash, Lit};
 use crate::inspect::{Inspected, Inspector, Strip};
 use crate::model::{Key, Value};
 use crate::overlay::Overlay;
@@ -169,7 +170,9 @@ pub(super) fn inspect_key(state: &mut State, key: Key) -> Vec<Effect> {
             let effects = copied(inspector.yank());
             // Spending the range here would punish a `y` on a null.
             if !effects.is_empty() {
+                let (entries, strips) = inspector.extent();
                 inspector.collapse_selection();
+                state.flash = Some(Flash::over(Lit::Inspector, entries, strips));
             }
             return effects;
         }

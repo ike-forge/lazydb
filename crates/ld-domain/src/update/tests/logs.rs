@@ -111,7 +111,10 @@ fn yanking_the_trail_lights_the_entries_it_took() {
     let flash = state
         .flash
         .expect("a yank on the Logs tab lights something");
-    assert_eq!(flash.panel(), Panel::Queries);
+    assert_eq!(
+        flash.lit_over(),
+        crate::feedback::Lit::Panel(Panel::Queries)
+    );
     assert_eq!(flash.rows(), &Ranges::of(Range::new(0, 0)));
 }
 

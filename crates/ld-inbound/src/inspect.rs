@@ -204,19 +204,18 @@ fn lay_out(view: &InspectView, width: usize, theme: Theme) -> (Vec<Line<'static>
 
 /// Per strip, name first, as the grid draws its cursor in each mode: a row
 /// bands the whole line, a cell its one strip under a crosshair, a column the
-/// strip on every line.
+/// strip on every line and no cursor at all. A flash outranks them all.
 fn marks(view: &InspectView, entry: usize, cursor: bool) -> [Option<Token>; 2] {
     let held = |strip: Strip| ranged(entry, strip.index(), &view.entries, &view.strips);
 
     [Strip::Name, Strip::Value].map(|strip| match view.mode {
+        _ if view.flash && held(strip) => Some(Token::Flash),
         SelectionMode::Row if cursor => Some(Token::Selected),
-        SelectionMode::Row => held(strip).then_some(Token::Ranged),
-        SelectionMode::Cell | SelectionMode::Column if cursor && strip == view.strip => {
-            Some(Token::SelectedCell)
-        }
         SelectionMode::Column if strip == view.strip => Some(Token::Selected),
-        SelectionMode::Cell | SelectionMode::Column if held(strip) => Some(Token::Ranged),
-        SelectionMode::Cell | SelectionMode::Column => cursor.then_some(Token::Crosshair),
+        SelectionMode::Cell if cursor && strip == view.strip => Some(Token::SelectedCell),
+        _ if !view.flash && held(strip) => Some(Token::Ranged),
+        SelectionMode::Cell => cursor.then_some(Token::Crosshair),
+        SelectionMode::Row | SelectionMode::Column => None,
     })
 }
 
@@ -748,6 +747,51 @@ mod tests {
         let band = Theme::default().style(Token::Selected).bg;
         assert_eq!(styled_at(&buffer, "blue").bg, band, "a line off the cursor");
         assert_ne!(styled_at(&buffer, "note").bg, band, "the name strip");
+        for (needle, what) in [("id", "the cursor's name"), ("7", "the cursor's value")] {
+            let style = styled_at(&buffer, needle);
+            assert!(
+                !style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::REVERSED),
+                "no cursor cell: {what}"
+            );
+            assert_ne!(
+                style.bg,
+                Theme::default().style(Token::Crosshair).bg,
+                "no crosshair: {what}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_yank_flashes_what_it_took_in_the_block() {
+        let mut state = State::default();
+        let mut inspector = opened(order());
+        inspector.cycle_mode();
+        state.overlay = Some(Overlay::Inspect(Box::new(inspector)));
+        state.flash = Some(ld_domain::feedback::Flash::over(
+            ld_domain::feedback::Lit::Inspector,
+            ld_domain::selection::Ranges::of(ld_domain::selection::Range::new(0, 1)),
+            ld_domain::selection::Ranges::of(ld_domain::selection::Range::new(1, 1)),
+        ));
+        let Some(OverlayView::Inspect(view)) = view_model(&state).overlay else {
+            panic!("the inspector projects");
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("a backend");
+        terminal
+            .draw(|frame| {
+                render(frame, &view, Theme::default());
+            })
+            .expect("TestBackend always draws");
+        let buffer = terminal.backend().buffer();
+
+        let flash = Theme::default().style(Token::Flash).add_modifier;
+        assert!(styled_at(buffer, "blue").add_modifier.contains(flash));
+        assert!(styled_at(buffer, "7").add_modifier.contains(flash));
+        assert!(
+            !styled_at(buffer, "note").add_modifier.contains(flash),
+            "the name strip was not taken"
+        );
     }
 
     #[test]

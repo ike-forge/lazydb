@@ -284,7 +284,10 @@ fn y_lights_up_what_it_yanked() {
     press(&mut state, Key::Char('y'));
 
     let flash = state.flash.expect("the yank lit what it copied");
-    assert_eq!(flash.panel(), Panel::Contents);
+    assert_eq!(
+        flash.lit_over(),
+        crate::feedback::Lit::Panel(Panel::Contents)
+    );
     assert_eq!(flash.rows(), &Ranges::of(Range::new(1, 2)));
     assert_eq!(flash.columns(), &Ranges::of(Range::new(0, 1)));
 }
@@ -322,7 +325,10 @@ fn a_bare_y_lights_the_row_it_took() {
     press(&mut state, Key::Char('y'));
 
     let flash = state.flash.expect("lit");
-    assert_eq!(flash.panel(), Panel::Objects);
+    assert_eq!(
+        flash.lit_over(),
+        crate::feedback::Lit::Panel(Panel::Objects)
+    );
     assert_eq!(flash.rows(), &Ranges::of(Range::new(0, 0)));
 }
 

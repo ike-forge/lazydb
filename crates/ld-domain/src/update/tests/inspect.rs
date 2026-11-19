@@ -308,6 +308,44 @@ fn v_then_y_yanks_the_fields_and_returns_to_the_anchor() {
 }
 
 #[test]
+fn y_flashes_the_inspector_and_not_the_grid_under_it() {
+    let mut state = opened(SelectionMode::Row);
+    press(&mut state, Key::Char('v'));
+    press(&mut state, Key::Char('j'));
+
+    press(&mut state, Key::Char('y'));
+
+    let flash = state.flash.clone().expect("lit");
+    assert_eq!(flash.lit_over(), crate::feedback::Lit::Inspector);
+    assert_eq!(
+        (flash.rows().clone(), flash.columns().clone()),
+        (
+            crate::selection::Ranges::of(crate::selection::Range::new(0, 1)),
+            crate::selection::Ranges::of(crate::selection::Range::new(0, 1)),
+        ),
+        "both fields, name and value"
+    );
+    let Some(crate::view::OverlayView::Inspect(view)) = crate::view::view_model(&state).overlay
+    else {
+        panic!("the inspector projects");
+    };
+    assert!(view.flash);
+    assert!(
+        crate::view::view_model(&state)
+            .panels
+            .iter()
+            .all(|panel| !matches!(
+                &panel.body,
+                crate::view::PanelBody::Grid { flash: true, .. }
+            )),
+        "the grid did not copy anything"
+    );
+
+    press(&mut state, Key::Char('j'));
+    assert_eq!(state.flash, None, "the next key ends it");
+}
+
+#[test]
 fn m_cycles_the_inspectors_own_mode_and_leaves_the_grids() {
     let mut state = opened(SelectionMode::Row);
 

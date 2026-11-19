@@ -349,6 +349,10 @@ fn column_token(schema: Option<&Catalog>, table: Option<&TableRef>, column: &str
 }
 
 pub(super) fn inspect(state: &State, inspector: &Inspector) -> InspectView {
+    let flash = state
+        .flash
+        .as_ref()
+        .filter(|flash| flash.lit_over() == crate::feedback::Lit::Inspector);
     let table = grid_table(state, inspector.subject());
     let column = |name: &str| column_token(state.schema(), table.as_ref(), name);
     let value = |at: usize, name: &str, value: &Value| InspectValue {
@@ -409,8 +413,9 @@ pub(super) fn inspect(state: &State, inspector: &Inspector) -> InspectView {
         }),
         mode: inspector.mode(),
         strip: inspector.strip(),
-        entries: inspector.entry_ranges(),
-        strips: inspector.strip_ranges(),
+        entries: flash.map_or_else(|| inspector.entry_ranges(), |flash| flash.rows().clone()),
+        strips: flash.map_or_else(|| inspector.strip_ranges(), |flash| flash.columns().clone()),
+        flash: flash.is_some(),
         search: inspector.search().cloned(),
         sift: inspector.sift().map(super::sift_view),
         message: inspector.message().cloned(),

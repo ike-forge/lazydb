@@ -30,11 +30,19 @@ impl Loader {
     }
 }
 
+/// What a flash lights: a panel, or the inspector over them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lit {
+    Panel(Panel),
+    /// Rows are its entries, columns its name and value strips.
+    Inspector,
+}
+
 /// A yank spends the selection, so this carries the rectangle it took. Empty on
 /// an axis means all of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Flash {
-    panel: Panel,
+    lit: Lit,
     rows: Ranges,
     columns: Ranges,
     remaining: usize,
@@ -46,8 +54,13 @@ pub const FLASH_TICKS: usize = 12;
 impl Flash {
     #[must_use]
     pub fn lit(panel: Panel, rows: Ranges, columns: Ranges) -> Self {
+        Self::over(Lit::Panel(panel), rows, columns)
+    }
+
+    #[must_use]
+    pub const fn over(lit: Lit, rows: Ranges, columns: Ranges) -> Self {
         Self {
-            panel,
+            lit,
             rows,
             columns,
             remaining: FLASH_TICKS,
@@ -61,8 +74,8 @@ impl Flash {
     }
 
     #[must_use]
-    pub const fn panel(&self) -> Panel {
-        self.panel
+    pub const fn lit_over(&self) -> Lit {
+        self.lit
     }
 
     #[must_use]
