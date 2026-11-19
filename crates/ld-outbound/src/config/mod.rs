@@ -2,6 +2,7 @@
 //! so the merge is tested over inline strings.
 
 mod discover;
+#[cfg(test)]
 mod example;
 mod merge;
 pub(crate) mod save;
@@ -260,21 +261,6 @@ fn open_instead(config: &mut Config, name: &str) -> Vec<Diagnostic> {
     }]
 }
 
-/// Silent either way: the example appearing is no event, and an unwritable home
-/// is no problem to report every launch.
-pub fn write_example_config(xdg: Option<&Path>, home: Option<&Path>) {
-    if let Some(path) = discover::global_path(xdg, home) {
-        example::write_if_absent(&path);
-    }
-}
-
-pub fn write_example_config_from_env() {
-    let xdg = non_empty_env("XDG_CONFIG_HOME");
-    let home = non_empty_env("HOME");
-
-    write_example_config(xdg.as_deref(), home.as_deref());
-}
-
 #[async_trait::async_trait]
 impl ld_domain::ports::ConfigSource for FileConfigSource {
     async fn load(&self) -> (Config, Vec<Diagnostic>) {
@@ -305,7 +291,6 @@ impl ld_domain::ports::ConfigSink for FileConfigSource {
         let target = self.save_target()?;
         let source = match std::fs::read_to_string(&target) {
             Ok(source) => source,
-            // A blocked first-run example write still lets the key land.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(error) => {
                 return Err(ld_domain::ports::ConfigWriteError::Io(format!(
@@ -476,7 +461,7 @@ mod tests {
             non_empty(Some(std::ffi::OsString::from("relative/path"))),
             None,
             "the XDG spec requires a non-absolute value to be ignored — otherwise a relative \
-             XDG_CONFIG_HOME turns write_example_config_from_env into a write into whatever \
+             XDG_CONFIG_HOME turns a theme save into a write into whatever \
              directory the process started in"
         );
         assert_eq!(

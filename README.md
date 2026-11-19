@@ -46,8 +46,10 @@ then `cargo install --path crates/ld-app --locked`.
 
 ## Get started
 
-The first launch writes a commented `~/.config/lazydb/config.toml`. Add a
-connection, then:
+LazyDB writes no config of its own; without `~/.config/lazydb/config.toml` it
+runs on defaults. Copy the commented
+[example](crates/ld-outbound/src/config/example.toml) there, add a connection,
+then:
 
 ```sh
 lazydb --connection dev

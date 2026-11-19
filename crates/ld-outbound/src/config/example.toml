@@ -1,6 +1,7 @@
 # LazyDB — user-level configuration.
 #
-# Written on first run; every line is commented, so this file changes nothing
+# Optional: without this file LazyDB runs on its defaults. Copy it to
+# ~/.config/lazydb/config.toml; every line is commented, so it changes nothing
 # until you uncomment something. Each key states its default.
 #
 # A project may override any of this from a `.lazydb.toml` in the

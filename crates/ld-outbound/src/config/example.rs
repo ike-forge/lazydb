@@ -1,28 +1,9 @@
-//! The annotated example written on first run. Authored, not generated, for the
-//! comments; `the_example_states_the_defaults_it_claims_to` keeps the values
-//! honest.
-
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
+//! The annotated reference config. Never written: no file means
+//! defaults. Authored, not generated, for the comments;
+//! `the_example_states_the_defaults_it_claims_to` keeps the values honest.
 
 pub(crate) const EXAMPLE: &str = include_str!("example.toml");
 
-/// `create_new` checks and creates in one syscall and refuses a pre-planted
-/// symlink.
-pub(crate) fn write_if_absent(path: &Path) {
-    if let Some(parent) = path.parent() {
-        let _ignored = std::fs::create_dir_all(parent);
-    }
-
-    let _ignored = File::options()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(EXAMPLE.as_bytes()));
-}
-
-#[cfg(test)]
 mod tests {
     use ld_domain::config::{Config, Diagnostic, Origin};
 
@@ -68,7 +49,7 @@ mod tests {
         assert_eq!(
             diagnostics,
             Vec::new(),
-            "the file written on first run must not report anything on the run that reads it"
+            "a copy of the example must not report anything on the run that reads it"
         );
         assert_eq!(
             config,

@@ -146,7 +146,6 @@ async fn run(
     let cluster: Arc<dyn Database> = Arc::new(ld_outbound::engines::Engines::new());
     let writer: Arc<dyn Writer> = Arc::new(ld_outbound::file::FileWriter);
 
-    ld_outbound::config::write_example_config_from_env();
     let mut source = ld_outbound::config::FileConfigSource::from_env();
     if let Some(path) = &options.config {
         source = source.named(path);

@@ -202,8 +202,7 @@ fn themes_sift_key(state: &mut State, key: Key) -> Vec<Effect> {
     Vec::new()
 }
 
-/// Not silent, unlike the first-run example write: that one would warn on every
-/// launch.
+/// Not silent: the user asked for the write.
 pub(super) fn theme_save_failed(state: &mut State, reason: String) -> Vec<Effect> {
     logged(
         state,
