@@ -188,7 +188,9 @@ pub(super) fn takes_text(state: &State) -> bool {
             | Overlay::Connections { sift, .. }
             | Overlay::History { sift, .. },
         ) => sift.is_some(),
-        Some(Overlay::Inspect(inspector)) => inspector.field().is_some(),
+        Some(Overlay::Inspect(inspector)) => {
+            inspector.field().is_some() || inspector.is_searching()
+        }
         Some(
             Overlay::Diagnostics(_) | Overlay::Failed(_) | Overlay::Commit(_) | Overlay::Discard(_),
         ) => false,
@@ -207,7 +209,7 @@ pub(super) fn goto(state: &mut State, edge: Edge) {
             Edge::Start => panel.to_start(),
             Edge::End => panel.to_end(),
         },
-        Some(Overlay::Inspect(inspector)) => match edge {
+        Some(Overlay::Inspect(inspector)) if inspector.message().is_none() => match edge {
             Edge::Start => inspector.to_start(),
             Edge::End => inspector.to_end(),
         },
@@ -235,8 +237,10 @@ pub(super) fn goto(state: &mut State, edge: Edge) {
             Edge::End => cursor.to_end(history),
         },
         Some(Overlay::Message(_)) | None => scroll(state, edge.motion()),
+        // `Inspect` here is under a stacked message.
         Some(
-            Overlay::Failed(_)
+            Overlay::Inspect(_)
+            | Overlay::Failed(_)
             | Overlay::Search(_)
             | Overlay::Export(_)
             | Overlay::Filter(_)
@@ -379,6 +383,16 @@ pub(super) fn dismiss_overlay(state: &mut State) -> bool {
             }
             true
         }
+        // One rung: a click spends itself on the topmost thing.
+        Some(Overlay::Inspect(mut inspector))
+            if inspector.message().is_some() || inspector.is_searching() =>
+        {
+            if !inspector.dismiss_message() {
+                inspector.cancel_search();
+            }
+            state.overlay = Some(Overlay::Inspect(inspector));
+            true
+        }
         Some(Overlay::Commands(mut panel)) if panel.sift().is_some() => {
             panel.restore_origin();
             state.overlay = Some(Overlay::Commands(panel));
@@ -450,7 +464,9 @@ pub(super) fn ctrl_key(state: &mut State, key: Key) -> Vec<Effect> {
         _ => {}
     }
 
-    if key == Key::Char('s') && matches!(state.overlay, Some(Overlay::Inspect(_))) {
+    if key == Key::Char('s')
+        && matches!(&state.overlay, Some(Overlay::Inspect(inspector)) if inspector.message().is_none())
+    {
         return commit_inspected_row(state);
     }
     if let Some(effects) = export_chord(state, key) {

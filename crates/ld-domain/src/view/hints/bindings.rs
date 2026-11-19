@@ -140,7 +140,7 @@ pub(super) const EXPORT_ROWS: Binding = Binding::new(&[ctrl('e')], "export");
 pub(super) const DELETE: Binding = Binding::new(&[key('d')], "delete");
 /// Greyed where no form could open; off on a read-only connection.
 pub(super) const INSERT_ROW: Binding = Binding::new(&[key('i')], "insert");
-const MODE: Binding = Binding::new(&[key('m')], "mode");
+pub(super) const MODE: Binding = Binding::new(&[key('m')], "mode");
 pub(super) const SORT: Binding = Binding::new(&[key('s')], "sort");
 pub(super) const FILTER: Binding = Binding::new(&[key('f')], "filter");
 /// Clears this column's filter only, unlike `esc clear`.

@@ -1,10 +1,11 @@
 //! The cell inspector.
 
 use crate::contents::{ContentsState, SelectionMode};
-use crate::inspect::{Inspected, Inspector};
+use crate::inspect::{Inspected, Inspector, Strip};
 use crate::model::{Key, Value};
 use crate::overlay::Overlay;
 use crate::panel::Panel;
+use crate::search::Direction;
 use crate::state::State;
 
 use super::{
@@ -78,7 +79,7 @@ pub(crate) fn inspection(state: &State) -> Option<Inspector> {
 
 pub(super) fn open_inspector(state: &mut State) {
     if let Some(inspector) = inspection(state) {
-        state.overlay = Some(Overlay::Inspect(inspector));
+        state.overlay = Some(Overlay::Inspect(Box::new(inspector)));
     }
 }
 
@@ -116,22 +117,63 @@ fn focus_first_editable(state: &mut State) {
     }
 }
 
-/// Unclaimed keys are inert.
+/// Unclaimed keys are inert. A stacked message claims every key, then the `/`
+/// prompt, then an open field.
 pub(super) fn inspect_key(state: &mut State, key: Key) -> Vec<Effect> {
-    if matches!(&state.overlay, Some(Overlay::Inspect(inspector)) if inspector.field().is_some()) {
+    let Some(Overlay::Inspect(inspector)) = &mut state.overlay else {
+        return Vec::new();
+    };
+
+    if inspector.message().is_some() {
+        if matches!(key, Key::Escape | Key::Enter) {
+            inspector.dismiss_message();
+        }
+        return Vec::new();
+    }
+
+    if inspector.is_searching() {
+        match key {
+            Key::Char(character) => inspector.search_push(character),
+            Key::Backspace => inspector.search_pop(),
+            Key::Enter => inspector.accept_search(),
+            Key::Escape => inspector.cancel_search(),
+            _ => {}
+        }
+        return Vec::new();
+    }
+
+    if inspector.field().is_some() {
         return field_key(state, key);
     }
 
-    if matches!(key, Key::Char('e')) {
-        return start_edit(state);
-    }
-
-    // Over a row not yet inserted, `⏎` asks to write it.
-    if matches!(key, Key::Enter)
-        && matches!(&state.overlay, Some(Overlay::Inspect(inspector)) if inspector.is_inserting())
-    {
-        open_insert_commit(state);
-        return Vec::new();
+    match key {
+        Key::Char('e') => return start_edit(state),
+        // Over a row not yet inserted, `⏎` asks to write it.
+        Key::Enter if inspector.is_inserting() => {
+            open_insert_commit(state);
+            return Vec::new();
+        }
+        Key::Char('x') if !inspector.is_inserting() => return set_null(state),
+        Key::Char('q') => return quit(state),
+        Key::Enter => {
+            escape(state);
+            return Vec::new();
+        }
+        Key::Escape => {
+            if !inspector.back_out() {
+                escape(state);
+            }
+            return Vec::new();
+        }
+        Key::Char('y') => {
+            let effects = copied(inspector.yank());
+            // Spending the range here would punish a `y` on a null.
+            if !effects.is_empty() {
+                inspector.collapse_selection();
+            }
+            return effects;
+        }
+        _ => {}
     }
 
     let (_, height) = inspector_extent(state);
@@ -142,16 +184,19 @@ pub(super) fn inspect_key(state: &mut State, key: Key) -> Vec<Effect> {
     match key {
         Key::Char('j') | Key::Down => inspector.down(),
         Key::Char('k') | Key::Up => inspector.up(),
+        Key::Char('h') | Key::Left => inspector.to_strip(Strip::Name),
+        Key::Char('l') | Key::Right => inspector.to_strip(Strip::Value),
         Key::PageDown => inspector.page_down(height),
         Key::PageUp => inspector.page_up(height),
         Key::Home => inspector.to_start(),
         Key::End => inspector.to_end(),
-        Key::Char('x') if inspector.is_inserting() => inspector.unset(),
-        Key::Char('x') => return set_null(state),
-        Key::Char('y') => return copied(inspector.yank()),
+        Key::Char('m') => inspector.cycle_mode(),
+        Key::Char('v') => inspector.toggle_visual(),
+        Key::Char('/') => inspector.open_search(),
+        Key::Char('n') => inspector.jump(Direction::Forwards),
+        Key::Char('N') => inspector.jump(Direction::Backwards),
+        Key::Char('x') => inspector.unset(),
         Key::Char('Y') => return copied(inspector.line()),
-        Key::Enter | Key::Escape => escape(state),
-        Key::Char('q') => return quit(state),
         _ => {}
     }
 

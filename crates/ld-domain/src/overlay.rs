@@ -57,7 +57,8 @@ pub enum Overlay {
     Export(ExportForm),
     /// The two spellings are a field on the prompt: one question either way.
     Drop(DropPrompt),
-    Inspect(Inspector),
+    /// Boxed for `clippy::large_enum_variant`.
+    Inspect(Box<Inspector>),
     Commit(CommitPrompt),
     /// Not a `Message`: answering it ends the process.
     Discard(Discard),

@@ -71,7 +71,7 @@ pub(super) fn open_insert(state: &mut State) {
                 .filter(|draft| draft.subject() == blank.subject())
                 .unwrap_or(blank);
 
-            state.overlay = Some(Overlay::Inspect(form));
+            state.overlay = Some(Overlay::Inspect(Box::new(form)));
             state.mark_dirty();
         }
         Err(refusal) if refusal.is_empty() => {}
@@ -112,7 +112,7 @@ pub(super) fn open_insert_commit(state: &mut State) {
         return;
     };
     state.overlay = Some(Overlay::Commit(CommitPrompt::inserting(
-        table, statement, form,
+        table, statement, *form,
     )));
     state.mark_dirty();
 }

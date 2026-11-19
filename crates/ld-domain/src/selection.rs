@@ -224,6 +224,18 @@ impl Selection {
         ranges
     }
 
+    /// What a command acts on: the ranges, or the cursor alone.
+    #[must_use]
+    pub fn spanned(&self, cursor: usize) -> Ranges {
+        let ranges = self.ranges(cursor);
+
+        if ranges.is_empty() {
+            Ranges::of(Range::new(cursor, cursor))
+        } else {
+            ranges
+        }
+    }
+
     #[must_use]
     pub const fn anchor(&self) -> Option<usize> {
         self.anchor

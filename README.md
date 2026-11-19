@@ -132,6 +132,7 @@ The bottom bar shows what the focused panel takes; `?` lists all of it.
 | `Ctrl-r` · `Ctrl-f` · `Ctrl-g` | Run the statement · format the buffer · query history |
 | `e` · `i` · `d` | Edit a cell · insert a row · delete rows or drop an object |
 | `x` | In the inspector: stage `NULL` |
+| `/` · `m` · `v` · `y` | In the inspector: the same, over its name / value table |
 | `Ctrl-s` | Preview and commit staged edits |
 | `Ctrl-o` / `Ctrl-t` | Connection picker / theme picker |
 | `Ctrl-c` | Cancel running queries |

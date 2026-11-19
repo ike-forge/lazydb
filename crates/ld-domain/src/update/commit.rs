@@ -169,7 +169,7 @@ pub(super) fn commit_key(state: &mut State, key: Key) -> Vec<Effect> {
         Key::Char('y') => return start_commit(state),
         Key::Char('n') | Key::Escape => {
             let form = prompt.take_form();
-            state.overlay = form.map(Overlay::Inspect);
+            state.overlay = form.map(|form| Overlay::Inspect(Box::new(form)));
         }
         _ => {}
     }

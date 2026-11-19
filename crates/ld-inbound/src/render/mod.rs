@@ -275,10 +275,14 @@ fn render_overlay(frame: &mut Frame, view: &ViewModel, hint_bar: Rect, theme: Th
         Some(OverlayView::Filter { column, query }) => {
             crate::filter::render(frame, column, query, theme);
         }
+        Some(OverlayView::Inspect(inspect)) => {
+            let wrapped = render_measured(frame, view, theme);
+            render_sift(frame, hint_bar, inspect.sift.as_ref(), view, theme);
+            return wrapped;
+        }
         Some(
             OverlayView::Drop(_)
             | OverlayView::Export(_)
-            | OverlayView::Inspect(_)
             | OverlayView::Commit(_)
             | OverlayView::Discard { .. }
             | OverlayView::Failed(_),

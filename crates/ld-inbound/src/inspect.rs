@@ -1,6 +1,9 @@
 //! The cell inspector, drawn over the panels. Wrapped here, where the width is;
 //! the line count returns through `Geometry`.
 
+use ld_domain::contents::SelectionMode;
+use ld_domain::inspect::Strip;
+use ld_domain::selection::Ranges;
 use ld_domain::style::Token;
 use ld_domain::view::{EditView, InspectBody, InspectValue, InspectView};
 use ld_domain::viewport::Span;
@@ -11,7 +14,8 @@ use ratatui::text::{Line, Span as TextSpan};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::body::{Extent, patched};
+use crate::body::Extent;
+use crate::highlight::spans;
 use crate::theme::Theme;
 
 /// Past this a line is longer than the eye tracks back from.
@@ -92,11 +96,16 @@ pub(crate) fn render(frame: &mut Frame, view: &InspectView, theme: Theme) -> (us
         crate::render::scrollbar(frame, area, &extent, theme.focus_border(), theme);
     }
 
+    if let Some(message) = &view.message {
+        crate::overlay::render(frame, message, theme);
+    }
+
     (total, selection)
 }
 
 fn lay_out(view: &InspectView, width: usize, theme: Theme) -> (Vec<Line<'static>>, Span) {
     let (body, cursor) = (&view.body, view.cursor);
+    let search = view.search.as_ref();
     let mut laid = Laid::default();
     // Drawn in place of the value, so the block says one thing per cell.
     let typing = |at: usize| view.editing.as_ref().filter(|edit| edit.field == at);
@@ -110,12 +119,21 @@ fn lay_out(view: &InspectView, width: usize, theme: Theme) -> (Vec<Line<'static>
             let style = value_style(value, theme);
 
             for (at, rows) in wrapped(value, width, 0).into_iter().enumerate() {
+                let mark = marks(view, at, at == cursor)[Strip::Value.index()];
                 let rows = rows
                     .into_iter()
-                    .map(|row| Line::from(TextSpan::styled(row, style)))
+                    .map(|row| {
+                        banded(
+                            Vec::new(),
+                            spans(&row, search, style, theme),
+                            [None, mark],
+                            width,
+                            theme,
+                        )
+                    })
                     .collect();
 
-                laid.push(rows, at == cursor, theme);
+                laid.push(rows, at == cursor);
             }
         }
         InspectBody::Row { names, fields } => {
@@ -128,10 +146,10 @@ fn lay_out(view: &InspectView, width: usize, theme: Theme) -> (Vec<Line<'static>
                 let name = field
                     .token
                     .map_or_else(|| theme.style(Token::Muted), |token| theme.style(token));
+                let pad = names.saturating_sub(field.name.width());
 
                 if let Some(edit) = typing(index) {
                     let label = field.name.clone();
-                    let pad = names.saturating_sub(field.name.width());
                     laid.field_under(
                         edit,
                         &format!("{label}{}", " ".repeat(pad + GAP)),
@@ -145,26 +163,35 @@ fn lay_out(view: &InspectView, width: usize, theme: Theme) -> (Vec<Line<'static>
                 }
 
                 for (line, rows) in wrapped(&field.value, width, hang).into_iter().enumerate() {
+                    let [name_mark, value_mark] = marks(view, index, at + line == cursor);
                     let rows = rows
                         .into_iter()
                         .enumerate()
                         .map(|(row, text)| {
                             let rest: String = text.chars().skip(hang).collect();
-                            let label = if (line, row) == (0, 0) {
-                                let pad = names.saturating_sub(field.name.width());
-                                format!("{}{}", field.name, " ".repeat(pad + GAP))
+                            let mut label = if (line, row) == (0, 0) {
+                                spans(&field.name, search, name, theme)
                             } else {
-                                " ".repeat(hang)
+                                Vec::new()
                             };
+                            let drawn = if (line, row) == (0, 0) {
+                                field.name.width()
+                            } else {
+                                0
+                            };
+                            label.push(TextSpan::styled(" ".repeat(hang - drawn), name));
 
-                            Line::from(vec![
-                                TextSpan::styled(label, name),
-                                TextSpan::styled(rest, style),
-                            ])
+                            banded(
+                                label,
+                                spans(&rest, search, style, theme),
+                                [name_mark, value_mark],
+                                width,
+                                theme,
+                            )
                         })
                         .collect();
 
-                    laid.push(rows, at + line == cursor, theme);
+                    laid.push(rows, at + line == cursor);
                 }
 
                 at += field.value.lines.len();
@@ -173,6 +200,74 @@ fn lay_out(view: &InspectView, width: usize, theme: Theme) -> (Vec<Line<'static>
     }
 
     (laid.lines, laid.selection)
+}
+
+/// Per strip, name first, as the grid draws its cursor in each mode: a row
+/// bands the whole line, a cell its one strip under a crosshair, a column the
+/// strip on every line.
+fn marks(view: &InspectView, entry: usize, cursor: bool) -> [Option<Token>; 2] {
+    let held = |strip: Strip| ranged(entry, strip.index(), &view.entries, &view.strips);
+
+    [Strip::Name, Strip::Value].map(|strip| match view.mode {
+        SelectionMode::Row if cursor => Some(Token::Selected),
+        SelectionMode::Row => held(strip).then_some(Token::Ranged),
+        SelectionMode::Cell | SelectionMode::Column if cursor && strip == view.strip => {
+            Some(Token::SelectedCell)
+        }
+        SelectionMode::Column if strip == view.strip => Some(Token::Selected),
+        SelectionMode::Cell | SelectionMode::Column if held(strip) => Some(Token::Ranged),
+        SelectionMode::Cell | SelectionMode::Column => cursor.then_some(Token::Crosshair),
+    })
+}
+
+/// As the grid decides a held cell: an empty axis constrains nothing, both
+/// empty holds nothing.
+fn ranged(entry: usize, strip: usize, entries: &Ranges, strips: &Ranges) -> bool {
+    (!entries.is_empty() || !strips.is_empty())
+        && (entries.is_empty() || entries.contains(entry))
+        && (strips.is_empty() || strips.contains(strip))
+}
+
+/// The value strip's mark runs to the block's edge: a band that stopped at
+/// the text would read as a match, not a cursor.
+fn banded(
+    name: Vec<TextSpan<'static>>,
+    value: Vec<TextSpan<'static>>,
+    [name_mark, value_mark]: [Option<Token>; 2],
+    width: usize,
+    theme: Theme,
+) -> Line<'static> {
+    let mut spans = marked(name, name_mark, theme);
+    spans.extend(marked(value, value_mark, theme));
+
+    if let Some(mark) = value_mark {
+        let used: usize = spans.iter().map(TextSpan::width).sum();
+        spans.push(TextSpan::styled(
+            " ".repeat(width.saturating_sub(used)),
+            theme.style(mark),
+        ));
+    }
+
+    Line::from(spans)
+}
+
+fn marked(
+    spans: Vec<TextSpan<'static>>,
+    mark: Option<Token>,
+    theme: Theme,
+) -> Vec<TextSpan<'static>> {
+    let Some(mark) = mark else {
+        return spans;
+    };
+    let band = theme.style(mark);
+
+    spans
+        .into_iter()
+        .map(|span| {
+            let style = span.style.patch(band);
+            span.style(style)
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -233,19 +328,15 @@ impl Laid {
         }
     }
 
-    /// Every wrapped row of the cursor's line is banded.
-    fn push(&mut self, rows: Vec<Line<'static>>, selected: bool, theme: Theme) {
-        if selected {
+    /// The cursor's line, every row it wrapped to, is what the offset follows.
+    fn push(&mut self, rows: Vec<Line<'static>>, cursor: bool) {
+        if cursor {
             self.selection = Span {
                 first: self.lines.len(),
                 lines: rows.len(),
             };
-            let band = theme.style(Token::Selected);
-            self.lines
-                .extend(rows.into_iter().map(|row| patched(row, band)));
-        } else {
-            self.lines.extend(rows);
         }
+        self.lines.extend(rows);
     }
 }
 
@@ -315,7 +406,7 @@ mod tests {
         for _ in 0..cursor {
             inspector.down();
         }
-        state.overlay = Some(Overlay::Inspect(inspector));
+        state.overlay = Some(Overlay::Inspect(Box::new(inspector)));
         let Some(OverlayView::Inspect(view)) = view_model(&state).overlay else {
             panic!("the inspector projects");
         };
@@ -460,11 +551,11 @@ mod tests {
     #[test]
     fn the_frame_reports_the_body_height_and_the_wrapped_lines() {
         let mut state = State::default();
-        state.overlay = Some(Overlay::Inspect(Inspector::opened(
+        state.overlay = Some(Overlay::Inspect(Box::new(Inspector::opened(
             0,
             Subject::Table(TableRef::new("shop", "orders")),
             cell(Value::Array("{1,2}".to_owned())),
-        )));
+        ))));
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("a backend");
         let mut geometry = None;
 
@@ -535,7 +626,7 @@ mod tests {
         );
         field.line_mut().insert('!');
         inspector.start_edit(field);
-        state.overlay = Some(Overlay::Inspect(inspector));
+        state.overlay = Some(Overlay::Inspect(Box::new(inspector)));
         let Some(OverlayView::Inspect(view)) = view_model(&state).overlay else {
             panic!("the inspector projects");
         };
@@ -557,17 +648,140 @@ mod tests {
         );
     }
 
+    fn order() -> Inspected {
+        Inspected::Row {
+            number: 1,
+            columns: vec!["id".to_owned(), "note".to_owned()],
+            values: vec![Value::Int(7), Value::Text("blue".to_owned())],
+        }
+    }
+
+    fn drawn_with(width: u16, height: u16, inspector: Inspector) -> Buffer {
+        let mut state = State::default();
+        state.overlay = Some(Overlay::Inspect(Box::new(inspector)));
+        let Some(OverlayView::Inspect(view)) = view_model(&state).overlay else {
+            panic!("the inspector projects");
+        };
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("a backend");
+        terminal
+            .draw(|frame| {
+                render(frame, &view, Theme::default());
+            })
+            .expect("TestBackend always draws");
+
+        terminal.backend().buffer().clone()
+    }
+
+    fn opened(inspected: Inspected) -> Inspector {
+        Inspector::opened(
+            0,
+            Subject::Table(TableRef::new("shop", "orders")),
+            inspected,
+        )
+    }
+
+    fn styled_at(buffer: &Buffer, needle: &str) -> Style {
+        let rows = rows(buffer);
+        let (y, row) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} drawn: {rows:#?}"));
+        let x = row[..row.find(needle).expect("found")].chars().count();
+
+        buffer
+            .cell((
+                u16::try_from(x).expect("narrow"),
+                u16::try_from(y).expect("short"),
+            ))
+            .expect("in the buffer")
+            .style()
+    }
+
+    #[test]
+    fn a_hit_wears_the_match_colour_in_a_name_and_in_a_value() {
+        let mut inspector = opened(order());
+        inspector.open_search();
+        for character in "e".chars() {
+            inspector.search_push(character);
+        }
+
+        let buffer = drawn_with(40, 12, inspector);
+
+        let hit = Theme::default().style(Token::Match).fg;
+        assert_eq!(styled_at(&buffer, "e  blue").fg, hit, "the name's e");
+        assert_eq!(styled_at(&buffer, "e   ").fg, hit, "the value's e");
+        assert_ne!(styled_at(&buffer, "blu").fg, hit, "only the hit");
+    }
+
+    #[test]
+    fn cell_mode_bands_the_cursors_strip_and_not_its_neighbour() {
+        let mut inspector = opened(order());
+        inspector.cycle_mode();
+        inspector.cycle_mode();
+        inspector.to_strip(ld_domain::inspect::Strip::Name);
+
+        let buffer = drawn_with(40, 12, inspector);
+
+        let cell = Theme::default().style(Token::SelectedCell);
+        assert!(
+            styled_at(&buffer, "id")
+                .add_modifier
+                .contains(cell.add_modifier),
+            "the name under the cursor"
+        );
+        assert!(
+            !styled_at(&buffer, "7")
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED),
+            "its value is only crosshaired"
+        );
+    }
+
+    #[test]
+    fn column_mode_bands_the_strip_on_every_line() {
+        let mut inspector = opened(order());
+        inspector.cycle_mode();
+
+        let buffer = drawn_with(40, 12, inspector);
+
+        let band = Theme::default().style(Token::Selected).bg;
+        assert_eq!(styled_at(&buffer, "blue").bg, band, "a line off the cursor");
+        assert_ne!(styled_at(&buffer, "note").bg, band, "the name strip");
+    }
+
+    #[test]
+    fn a_stacked_message_is_drawn_over_the_block() {
+        let mut inspector = opened(order());
+        inspector.raise(ld_domain::overlay::Message {
+            title: "Not editable".to_owned(),
+            message: "id is part of the primary key.".to_owned(),
+            severity: ld_domain::style::Severity::Warning,
+        });
+
+        let drawn = rows(&drawn_with(60, 16, inspector));
+
+        assert!(
+            drawn.iter().any(|row| row.contains("Not editable")),
+            "{drawn:#?}"
+        );
+        assert!(
+            drawn.iter().any(|row| row.contains("shop.orders · row 1")),
+            "the inspector stays under it: {drawn:#?}"
+        );
+    }
+
     #[test]
     fn a_dirty_field_is_drawn_in_the_uncommitted_colour() {
         let mut state = State::default();
-        state.overlay = Some(Overlay::Inspect(
+        state.overlay = Some(Overlay::Inspect(Box::new(
             Inspector::opened(
                 0,
                 Subject::Table(TableRef::new("shop", "orders")),
                 cell(Value::Text("ada".to_owned())),
             )
             .with_edited(vec![0]),
-        ));
+        )));
         let Some(OverlayView::Inspect(view)) = view_model(&state).overlay else {
             panic!("the inspector projects");
         };

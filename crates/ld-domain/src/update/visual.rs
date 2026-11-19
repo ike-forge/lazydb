@@ -3,20 +3,14 @@
 use crate::contents::SelectionMode;
 use crate::panel::Panel;
 use crate::queries::QueriesTab;
-use crate::selection::{Range, Ranges, Selection};
+use crate::selection::{Ranges, Selection};
 use crate::state::State;
 use crate::viewport::Cursor;
 
 use super::row_count;
 
 pub(super) fn spanned(selection: &Selection, cursor: usize) -> Ranges {
-    let ranges = selection.ranges(cursor);
-
-    if ranges.is_empty() {
-        Ranges::of(Range::new(cursor, cursor))
-    } else {
-        ranges
-    }
+    selection.spanned(cursor)
 }
 
 /// A selection only means a range in company with its cursor, and which cursor
