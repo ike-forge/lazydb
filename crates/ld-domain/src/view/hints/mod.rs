@@ -11,16 +11,16 @@ use bindings::{
     CONNECTIONS, CONNECTIONS_GLOBAL, COPY, COPY_LINE, DELETE, DELETE_TYPED, DELETE_YES_NO,
     DIAGNOSTICS_GLOBAL, DISCARD, DONE, DROP, DROP_TYPED, DROP_YES_NO, EDIT, ENTER, EVERY_PAGE,
     EXPORT, EXPORT_COPY, EXPORT_OVERWRITE, EXPORT_ROWS, FIELD, FILTER, FORMAT, HISTORY,
-    HISTORY_GLOBAL, HISTORY_HINT, INSERT, INSERT_ROW, INSPECT_GLOBAL, INSPECT_ROW, LEAVE, MOVE,
-    NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL, PALETTE_GLOBAL, RUN, SEARCH, SEARCH_GLOBAL, SELECT,
-    SORT, STOP, TOGGLE, UNSET,
+    HISTORY_GLOBAL, HISTORY_HINT, INSERT, INSERT_ROW, INSPECT_GLOBAL, INSPECT_ROW, LEAVE, MODE,
+    MOVE, NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL, PALETTE_GLOBAL, RUN, SEARCH, SEARCH_GLOBAL,
+    SELECT, SORT, STOP, TOGGLE, UNSET,
 };
 pub(crate) use bindings::{GLOBAL, THEMES, THEMES_GLOBAL};
 
 use crate::connection::ConnectionState;
 use crate::drop::DropPrompt;
 use crate::export::{Button, ExportForm, Stop};
-use crate::inspect::Inspector;
+use crate::inspect::{Inspected, Inspector};
 use crate::model::{Key, KeyPress, Statement};
 use crate::overlay::Overlay;
 use crate::panel::Panel;
@@ -234,6 +234,12 @@ fn drop_bar(prompt: &DropPrompt) -> HintBar {
 
 /// `y` greys over a null value, `Y` over a null field's line.
 fn inspect_bar(state: &State, inspector: &Inspector) -> HintBar {
+    if inspector.message().is_some() {
+        return fixed(&[], INSPECT_GLOBAL);
+    }
+    if inspector.is_searching() {
+        return fixed(&[], SEARCH_GLOBAL);
+    }
     // An open field names only what it answers.
     if inspector.field().is_some() {
         return HintBar {
@@ -261,10 +267,26 @@ fn inspect_bar(state: &State, inspector: &Inspector) -> HintBar {
         panel.push(rendered_live(&NULL, crate::update::nullable_here(state)));
         panel.push(rendered_live(&COMMIT_ROW, !inspector.edited().is_empty()));
     }
+    if matches!(inspector.inspected(), Inspected::Row { .. }) {
+        panel.push(rendered(&MODE));
+    }
+
+    let mut global = vec![rendered(&SEARCH)];
+    if inspector.search().is_some() {
+        global.push(rendered(&NEXT_MATCH));
+    }
+    global.push(rendered(&SELECT));
+    global.push(
+        if inspector.is_selecting() || inspector.search().is_some() {
+            rendered(&CLEAR)
+        } else {
+            rendered(&CLOSE)
+        },
+    );
 
     HintBar {
         panel,
-        global: INSPECT_GLOBAL.iter().map(rendered).collect(),
+        global,
         export: None,
     }
 }

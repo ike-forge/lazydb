@@ -25,6 +25,7 @@ use crate::contents::SelectionMode;
 use crate::ddl::StructureTab;
 use crate::drop::Answer;
 use crate::export::{Confirm, Format, Scope, Stop};
+use crate::inspect::Strip;
 use crate::overlay::{Message, Overlay};
 use crate::panel::Panel;
 use crate::posture::Posture;
@@ -198,6 +199,17 @@ pub struct InspectView {
     pub cursor: usize,
     pub offset: usize,
     pub editing: Option<EditView>,
+    /// Always `Row` over a cell.
+    pub mode: SelectionMode,
+    pub strip: Strip,
+    /// Fields over a row, lines over a cell. Empty on an axis the mode
+    /// ignores, as a grid's ranges are.
+    pub entries: Ranges,
+    pub strips: Ranges,
+    pub search: Option<Search>,
+    pub sift: Option<SiftView>,
+    /// Drawn over the block.
+    pub message: Option<Message>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,7 +273,7 @@ pub struct SiftView {
     pub search: Option<Search>,
 }
 
-fn sift_view(sift: &Sift) -> SiftView {
+pub(super) fn sift_view(sift: &Sift) -> SiftView {
     SiftView {
         query: sift.query().to_owned(),
         search: sift.search(),

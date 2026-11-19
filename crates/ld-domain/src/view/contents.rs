@@ -407,6 +407,13 @@ pub(super) fn inspect(state: &State, inspector: &Inspector) -> InspectView {
                 error: inspector.field_error(),
             })
         }),
+        mode: inspector.mode(),
+        strip: inspector.strip(),
+        entries: inspector.entry_ranges(),
+        strips: inspector.strip_ranges(),
+        search: inspector.search().cloned(),
+        sift: inspector.sift().map(super::sift_view),
+        message: inspector.message().cloned(),
     }
 }
 

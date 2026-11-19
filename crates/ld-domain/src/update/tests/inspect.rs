@@ -14,7 +14,7 @@ fn opened_long() -> State {
         panic!("the inspector is up");
     };
 
-    state.overlay = Some(Overlay::Inspect(Inspector::opened(
+    state.overlay = Some(Overlay::Inspect(Box::new(Inspector::opened(
         0,
         inspector.subject().clone(),
         Inspected::Cell {
@@ -25,7 +25,7 @@ fn opened_long() -> State {
                 (0..38).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
             )),
         },
-    )));
+    ))));
     state
 }
 
@@ -246,10 +246,9 @@ fn q_quits_from_the_inspector() {
 
 #[test]
 fn every_other_key_is_inert() {
+    // A cell has no name strip, so no other mode and nowhere sideways.
     for key in [
         Key::Char('m'),
-        Key::Char('v'),
-        Key::Char('/'),
         Key::Char('d'),
         Key::Char('l'),
         Key::Char('?'),
@@ -285,13 +284,116 @@ fn y_yanks_the_bare_value_and_leaves_the_inspector_open() {
 }
 
 #[test]
-fn y_yanks_the_row_as_one_csv_line() {
+fn y_yanks_the_field_as_its_name_and_value() {
     let mut state = opened(SelectionMode::Row);
 
     let effects = press(&mut state, Key::Char('y'));
 
-    assert_eq!(effects, vec![Effect::Yank("r2c0,r2c1,r2c2".to_owned())]);
+    assert_eq!(effects, vec![Effect::Yank("c0,r2c0".to_owned())]);
     assert!(inspecting(&state).is_some());
+}
+
+#[test]
+fn v_then_y_yanks_the_fields_and_returns_to_the_anchor() {
+    let mut state = opened(SelectionMode::Row);
+    press(&mut state, Key::Char('v'));
+    press(&mut state, Key::Char('j'));
+
+    let effects = press(&mut state, Key::Char('y'));
+
+    assert_eq!(effects, vec![Effect::Yank("c0,r2c0\nc1,r2c1".to_owned())]);
+    let inspector = inspecting(&state).expect("still open");
+    assert!(!inspector.is_selecting());
+    assert_eq!(inspector.cursor(), 0);
+}
+
+#[test]
+fn m_cycles_the_inspectors_own_mode_and_leaves_the_grids() {
+    let mut state = opened(SelectionMode::Row);
+
+    press(&mut state, Key::Char('m'));
+    assert_eq!(
+        inspecting(&state).map(Inspector::mode),
+        Some(SelectionMode::Column)
+    );
+    assert_eq!(state.contents.mode, SelectionMode::Row);
+
+    let effects = press(&mut state, Key::Char('y'));
+    assert_eq!(
+        effects,
+        vec![Effect::Yank("r2c0,r2c1,r2c2".to_owned())],
+        "the value strip, as the grid yanks a column"
+    );
+}
+
+#[test]
+fn cell_mode_selects_a_square_across_names_and_values() {
+    let mut state = opened(SelectionMode::Row);
+    for key in [
+        Key::Char('m'),
+        Key::Char('m'),
+        Key::Char('j'),
+        Key::Char('v'),
+        Key::Char('j'),
+        Key::Char('h'),
+    ] {
+        press(&mut state, key);
+    }
+
+    let effects = press(&mut state, Key::Char('y'));
+
+    assert_eq!(effects, vec![Effect::Yank("c1,r2c1\nc2,r2c2".to_owned())]);
+}
+
+#[test]
+fn slash_searches_names_and_values_and_n_walks_them() {
+    let mut state = opened(SelectionMode::Row);
+
+    press(&mut state, Key::Char('/'));
+    press(&mut state, Key::Char('2'));
+    assert_eq!(inspecting(&state).map(Inspector::cursor), Some(1), "r2c1");
+    press(&mut state, Key::Enter);
+    assert!(inspecting(&state).is_some(), "enter keeps the inspector");
+
+    press(&mut state, Key::Char('n'));
+    assert_eq!(
+        inspecting(&state).map(Inspector::cursor),
+        Some(2),
+        "the name c2"
+    );
+    press(&mut state, Key::Char('N'));
+    assert_eq!(inspecting(&state).map(Inspector::cursor), Some(1));
+}
+
+#[test]
+fn the_prompt_takes_g_and_q_as_text() {
+    let mut state = opened(SelectionMode::Row);
+    press(&mut state, Key::Char('/'));
+
+    let effects = press(&mut state, Key::Char('q'));
+    press(&mut state, Key::Char('G'));
+
+    assert!(effects.is_empty());
+    assert_eq!(
+        inspecting(&state)
+            .and_then(Inspector::sift)
+            .map(crate::search::Sift::query),
+        Some("qG")
+    );
+}
+
+#[test]
+fn esc_clears_the_search_before_it_closes_the_inspector() {
+    let mut state = opened(SelectionMode::Row);
+    press(&mut state, Key::Char('/'));
+    press(&mut state, Key::Char('c'));
+    press(&mut state, Key::Enter);
+
+    press(&mut state, Key::Escape);
+    assert_eq!(inspecting(&state).and_then(Inspector::search), None);
+
+    press(&mut state, Key::Escape);
+    assert_eq!(state.overlay, None);
 }
 
 #[test]
@@ -399,7 +501,15 @@ fn the_bar_names_move_copy_and_close_over_the_inspector() {
             .chain(&bar.global)
             .map(|hint| format!("{} {}", hint.keys, hint.action))
             .collect::<Vec<_>>(),
-        ["j/k move", "y copy", "Y copy line", "e edit", "esc close"]
+        [
+            "j/k move",
+            "y copy",
+            "Y copy line",
+            "e edit",
+            "/ search",
+            "v select",
+            "esc close"
+        ]
     );
 }
 

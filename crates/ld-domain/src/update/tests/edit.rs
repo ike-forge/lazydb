@@ -104,6 +104,64 @@ fn a_read_only_connection_is_refused_before_anything_else_is_asked() {
 }
 
 #[test]
+fn a_refusal_stacks_over_the_inspector_and_esc_takes_only_it() {
+    let mut state = inspecting_row(3);
+
+    press(&mut state, Key::Char('e'));
+    assert!(refusal(&state).is_some());
+
+    press(&mut state, Key::Char('j'));
+    press_binding(&mut state, KeyPress::ctrl(Key::Char('s')));
+    assert!(refusal(&state).is_some(), "every other key waits on it");
+
+    press(&mut state, Key::Escape);
+    assert_eq!(refusal(&state), None);
+    assert!(
+        matches!(&state.overlay, Some(Overlay::Inspect(inspector)) if inspector.cursor() == 0),
+        "the inspector is where it was"
+    );
+}
+
+#[test]
+fn a_click_takes_the_stacked_refusal_before_the_inspector() {
+    let mut state = inspecting_row(3);
+    press(&mut state, Key::Char('e'));
+
+    update(
+        &mut state,
+        Msg::Pointer(Pointer::Click(Click::Panel(Panel::Objects))),
+    );
+
+    assert_eq!(refusal(&state), None);
+    assert!(matches!(state.overlay, Some(Overlay::Inspect(_))));
+}
+
+#[test]
+fn column_mode_in_the_inspector_refuses_an_edit() {
+    let mut state = inspecting_row(3);
+    on_email(&mut state);
+    press(&mut state, Key::Char('m'));
+
+    press(&mut state, Key::Char('e'));
+
+    assert_eq!(field_text(&state), None);
+    assert!(
+        refusal(&state).is_some_and(|message| message.contains("Column mode")),
+        "{:?}",
+        refusal(&state)
+    );
+
+    press(&mut state, Key::Escape);
+    press(&mut state, Key::Char('m'));
+    press(&mut state, Key::Char('e'));
+    assert_eq!(
+        field_text(&state).as_deref(),
+        Some("ada@example.com"),
+        "cell mode edits"
+    );
+}
+
+#[test]
 fn a_typed_statement_has_no_table_to_update() {
     let mut state = editable_grid(1);
     let query = QueryId::next();

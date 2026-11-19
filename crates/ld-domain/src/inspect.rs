@@ -6,9 +6,12 @@ use std::collections::BTreeMap;
 
 use crate::bytes::Bytes;
 use crate::cell;
-use crate::contents::Subject;
+use crate::contents::{SelectionMode, Subject};
 use crate::edit::{Edited, Field};
-use crate::model::Value;
+use crate::model::{Row, Value};
+use crate::overlay::Message;
+use crate::search::{Direction, Search, Sift};
+use crate::selection::{Range, Ranges, Selection};
 use crate::style::Segment;
 use crate::viewport::{Scroll, Span};
 
@@ -61,8 +64,60 @@ impl Inspected {
     }
 }
 
+/// A row is drawn as a name|value table; cell and column mode put the cursor on
+/// one of its two strips.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Strip {
+    Name,
+    #[default]
+    Value,
+}
+
+impl Strip {
+    const COUNT: usize = 2;
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Name => 0,
+            Self::Value => 1,
+        }
+    }
+
+    const fn at(index: usize) -> Self {
+        if index == 0 { Self::Name } else { Self::Value }
+    }
+}
+
+/// The `/` prompt. Unlike a picker's sift, what it finds outlives it: `n`
+/// walks the hits after `⏎`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seek {
+    sift: Sift,
+    /// Typing overwrites the search per keystroke, so `esc` needs this.
+    previous: Option<Search>,
+    strip: Strip,
+}
+
+/// One cursor line, as search reads it.
+struct Laid<'a> {
+    /// Only on a row field's first line, where the name is drawn.
+    name: Option<&'a str>,
+    text: String,
+}
+
+impl Laid<'_> {
+    fn holds(&self, search: &Search, strip: Strip) -> bool {
+        match strip {
+            Strip::Name => self.name.is_some_and(|name| search.matches(name)),
+            Strip::Value => search.matches(&self.text),
+        }
+    }
+}
+
 /// The cursor counts laid-out lines (width-independent); the offset counts
-/// wrapped lines and follows by span.
+/// wrapped lines and follows by span. Over a row, the entry axis counts fields;
+/// over a cell, lines.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Inspector {
     /// The drawn row an edit made here applies back to.
@@ -78,6 +133,15 @@ pub struct Inspector {
     edited: Vec<usize>,
     /// Set while the block is the form for a row not yet inserted.
     new_row: Option<BTreeMap<usize, Edited>>,
+    /// Always `Row` over a cell, which has no name strip.
+    mode: SelectionMode,
+    strip: Strip,
+    entries: Selection,
+    strips: Selection,
+    search: Option<Search>,
+    seek: Option<Seek>,
+    /// Stacked over the block, so a refusal does not take what it refused.
+    message: Option<Message>,
 }
 
 impl Inspector {
@@ -92,6 +156,13 @@ impl Inspector {
             field: None,
             edited: Vec::new(),
             new_row: None,
+            mode: SelectionMode::Row,
+            strip: Strip::Value,
+            entries: Selection::default(),
+            strips: Selection::default(),
+            search: None,
+            seek: None,
+            message: None,
         }
     }
 
@@ -374,14 +445,306 @@ impl Inspector {
         self.scroll.clamp_to(lines, height);
     }
 
+    /// As the grid yanks: a lone cell bare, more as CSV. Over a cell, a held
+    /// range of lines copies as drawn.
     #[must_use]
     pub fn yank(&self) -> Option<String> {
         match &self.inspected {
+            Inspected::Cell { value, .. } if self.entries.is_active() => {
+                let held = self.entries.ranges(self.cursor);
+                Some(crate::yank::lines(
+                    lines(value)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(at, _)| held.contains(*at))
+                        .map(|(_, line)| line),
+                ))
+            }
             Inspected::Cell { value, .. } => crate::yank::grid_cell(value),
-            Inspected::Row { values, .. } => Some(crate::yank::grid_row(&crate::model::Row {
-                values: values.clone(),
-            })),
+            Inspected::Row {
+                columns, values, ..
+            } => {
+                let table: Vec<Row> = columns
+                    .iter()
+                    .zip(values)
+                    .map(|(name, value)| Row {
+                        values: vec![Value::Text(name.clone()), value.clone()],
+                    })
+                    .collect();
+                let entries = self.entries.spanned(self.field_at_cursor());
+                let strips = self.strips.spanned(self.strip.index());
+                let both = Ranges::of(Range::new(0, Strip::COUNT - 1));
+
+                match self.mode {
+                    SelectionMode::Row => Some(crate::yank::grid_block(&table, &entries, &both)),
+                    SelectionMode::Column => Some(crate::yank::grid_columns(&table, &strips)),
+                    SelectionMode::Cell if entries.rows() == 1 && strips.rows() == 1 => {
+                        let row = table.get(entries.first()?.first())?;
+                        crate::yank::grid_cell(row.values.get(strips.first()?.first())?)
+                    }
+                    SelectionMode::Cell => Some(crate::yank::grid_block(&table, &entries, &strips)),
+                }
+            }
         }
+    }
+
+    const fn is_row(&self) -> bool {
+        matches!(self.inspected, Inspected::Row { .. })
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> SelectionMode {
+        self.mode
+    }
+
+    #[must_use]
+    pub const fn strip(&self) -> Strip {
+        self.strip
+    }
+
+    /// Inert over a cell. A range carries the old mode's axis; keeping it
+    /// would address cells never chosen.
+    pub fn cycle_mode(&mut self) {
+        if self.is_row() {
+            self.mode = self.mode.next();
+            self.entries.clear();
+            self.strips.clear();
+        }
+    }
+
+    /// Row mode names no strip, so the cursor stays put.
+    pub fn to_strip(&mut self, strip: Strip) {
+        if self.mode != SelectionMode::Row {
+            self.strip = strip;
+        }
+    }
+
+    fn entry_at_cursor(&self) -> usize {
+        if self.is_row() {
+            self.field_at_cursor()
+        } else {
+            self.cursor
+        }
+    }
+
+    fn axes(&mut self) -> [Option<(&mut Selection, usize)>; 2] {
+        let (entry, strip) = (self.entry_at_cursor(), self.strip.index());
+
+        match self.mode {
+            SelectionMode::Row => [Some((&mut self.entries, entry)), None],
+            SelectionMode::Column => [None, Some((&mut self.strips, strip))],
+            SelectionMode::Cell => [
+                Some((&mut self.entries, entry)),
+                Some((&mut self.strips, strip)),
+            ],
+        }
+    }
+
+    pub fn toggle_visual(&mut self) {
+        for (selection, cursor) in self.axes().into_iter().flatten() {
+            selection.toggle(cursor);
+        }
+    }
+
+    /// `false` with nothing to back out of, so `esc` falls through to closing.
+    pub fn back_out(&mut self) -> bool {
+        let mut extending = false;
+        for (selection, cursor) in self.axes().into_iter().flatten() {
+            if selection.is_extending() {
+                selection.stop(cursor);
+                extending = true;
+            }
+        }
+        if extending {
+            return true;
+        }
+
+        if self.entries.is_active() || self.strips.is_active() {
+            self.entries.clear();
+            self.strips.clear();
+            return true;
+        }
+
+        self.search.take().is_some()
+    }
+
+    /// Back to the anchor, as the grid's cursor returns after a yank.
+    pub fn collapse_selection(&mut self) {
+        if let Some(anchor) = self.entries.anchor() {
+            if self.is_row() {
+                self.focus_field(anchor);
+            } else {
+                self.go_to(anchor);
+            }
+        }
+        if let Some(anchor) = self.strips.anchor() {
+            self.strip = Strip::at(anchor);
+        }
+        self.entries.clear();
+        self.strips.clear();
+    }
+
+    /// Empty on an axis the mode ignores, as the grid projects its ranges.
+    #[must_use]
+    pub fn entry_ranges(&self) -> Ranges {
+        match self.mode {
+            SelectionMode::Row | SelectionMode::Cell => self.entries.ranges(self.entry_at_cursor()),
+            SelectionMode::Column => Ranges::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn strip_ranges(&self) -> Ranges {
+        match self.mode {
+            SelectionMode::Column | SelectionMode::Cell => self.strips.ranges(self.strip.index()),
+            SelectionMode::Row => Ranges::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_selecting(&self) -> bool {
+        self.entries.is_active() || self.strips.is_active()
+    }
+
+    #[must_use]
+    pub const fn search(&self) -> Option<&Search> {
+        self.search.as_ref()
+    }
+
+    #[must_use]
+    pub fn sift(&self) -> Option<&Sift> {
+        self.seek.as_ref().map(|seek| &seek.sift)
+    }
+
+    /// Clears the search at once, as a panel's prompt does.
+    pub fn open_search(&mut self) {
+        self.seek = Some(Seek {
+            sift: Sift::opened(self.cursor),
+            previous: self.search.take(),
+            strip: self.strip,
+        });
+    }
+
+    pub fn search_push(&mut self, character: char) {
+        if let Some(seek) = &mut self.seek {
+            seek.sift.push(character);
+            self.sought();
+        }
+    }
+
+    /// Popping an empty query cancels, as a picker's sift does.
+    pub fn search_pop(&mut self) {
+        let Some(seek) = &mut self.seek else {
+            return;
+        };
+
+        if seek.sift.pop() {
+            self.sought();
+        } else {
+            self.cancel_search();
+        }
+    }
+
+    /// Every keystroke searches from where the prompt opened, so extending a
+    /// term does not walk the cursor.
+    fn sought(&mut self) {
+        let Some(seek) = &self.seek else {
+            return;
+        };
+        let (search, origin, strip) = (seek.sift.search(), seek.sift.origin(), seek.strip);
+
+        self.search = search;
+        self.go_to(origin);
+        self.strip = strip;
+        self.jump(Direction::Forwards);
+    }
+
+    pub fn accept_search(&mut self) {
+        self.seek = None;
+    }
+
+    pub fn cancel_search(&mut self) {
+        if let Some(seek) = self.seek.take() {
+            self.search = seek.previous;
+            self.go_to(seek.sift.origin());
+            self.strip = seek.strip;
+        }
+    }
+
+    #[must_use]
+    pub const fn is_searching(&self) -> bool {
+        self.seek.is_some()
+    }
+
+    /// Inert without a search or a hit.
+    pub fn jump(&mut self, direction: Direction) {
+        let Some(search) = &self.search else {
+            return;
+        };
+
+        if let Some((line, strip)) = self.next_match(search, direction) {
+            self.go_to(line);
+            self.strip = strip;
+        }
+    }
+
+    /// Over every (line, strip) in reading order, from the one after the
+    /// cursor round to the cursor itself.
+    fn next_match(&self, search: &Search, direction: Direction) -> Option<(usize, Strip)> {
+        let laid = self.laid();
+        let len = laid.len() * Strip::COUNT;
+        if len == 0 {
+            return None;
+        }
+        let from = self.cursor * Strip::COUNT + self.strip.index();
+
+        (0..len)
+            .scan(from, |at, _| {
+                *at = direction.step(*at, len);
+                Some(*at)
+            })
+            .find(|at| {
+                laid.get(at / Strip::COUNT)
+                    .is_some_and(|line| line.holds(search, Strip::at(at % Strip::COUNT)))
+            })
+            .map(|at| (at / Strip::COUNT, Strip::at(at % Strip::COUNT)))
+    }
+
+    fn laid(&self) -> Vec<Laid<'_>> {
+        let names: Vec<Option<&str>> = match &self.inspected {
+            Inspected::Cell { .. } => vec![None],
+            Inspected::Row { columns, .. } => {
+                columns.iter().map(|name| Some(name.as_str())).collect()
+            }
+        };
+
+        self.inspected
+            .values()
+            .iter()
+            .zip(names)
+            .flat_map(|(value, name)| {
+                lines(value)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(at, text)| Laid {
+                        name: name.filter(|_| at == 0),
+                        text,
+                    })
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub const fn message(&self) -> Option<&Message> {
+        self.message.as_ref()
+    }
+
+    pub fn raise(&mut self, message: Message) {
+        self.message = Some(message);
+    }
+
+    pub fn dismiss_message(&mut self) -> bool {
+        self.message.take().is_some()
     }
 
     /// The indent dropped, and in row mode the column name too.
@@ -776,21 +1139,193 @@ mod tests {
         assert_eq!(crate::style::text(&row.title()), "SELECT * FROM t · row 3");
     }
 
-    #[test]
-    fn a_cell_yanks_bare_and_a_row_as_one_csv_line() {
-        assert_eq!(cell(text("a,b")).yank().as_deref(), Some("a,b"));
-        assert_eq!(cell(Value::Null).yank(), None);
-
-        let row = Inspector::opened(
+    fn order() -> Inspector {
+        Inspector::opened(
             0,
             Subject::Table(TableRef::new("shop", "orders")),
             Inspected::Row {
                 number: 1,
-                columns: vec!["id".to_owned(), "note".to_owned()],
-                values: vec![Value::Int(1), text("a,b")],
+                columns: vec!["id".to_owned(), "note".to_owned(), "tags".to_owned()],
+                values: vec![
+                    Value::Int(1),
+                    text("a,b"),
+                    Value::Array("{red,blue}".to_owned()),
+                ],
             },
+        )
+    }
+
+    #[test]
+    fn a_cell_yanks_bare() {
+        assert_eq!(cell(text("a,b")).yank().as_deref(), Some("a,b"));
+        assert_eq!(cell(Value::Null).yank(), None);
+    }
+
+    #[test]
+    fn a_held_range_of_a_cells_lines_yanks_them_as_drawn() {
+        let mut cell = cell(Value::Array("{a,b,c}".to_owned()));
+        cell.down();
+        cell.toggle_visual();
+        cell.down();
+
+        assert_eq!(cell.yank().as_deref(), Some("  a,\n  b,"));
+    }
+
+    #[test]
+    fn row_mode_yanks_the_field_under_the_cursor_as_its_name_and_value() {
+        let mut row = order();
+        row.down();
+
+        assert_eq!(row.yank().as_deref(), Some(r#"note,"a,b""#));
+    }
+
+    #[test]
+    fn a_range_of_fields_yanks_one_csv_line_a_field() {
+        let mut row = order();
+        row.toggle_visual();
+        row.down();
+
+        assert_eq!(row.yank().as_deref(), Some("id,1\nnote,\"a,b\""));
+    }
+
+    #[test]
+    fn column_mode_yanks_the_strip_as_the_grid_yanks_a_column() {
+        let mut row = order();
+        row.cycle_mode();
+        assert_eq!(row.mode(), SelectionMode::Column);
+
+        assert_eq!(row.yank().as_deref(), Some(r#"1,"a,b","{red,blue}""#));
+
+        row.to_strip(Strip::Name);
+        assert_eq!(row.yank().as_deref(), Some("id,note,tags"));
+    }
+
+    #[test]
+    fn cell_mode_yanks_one_cell_bare_and_a_square_as_csv() {
+        let mut row = order();
+        row.cycle_mode();
+        row.cycle_mode();
+        assert_eq!(row.mode(), SelectionMode::Cell);
+        row.down();
+        assert_eq!(
+            row.yank().as_deref(),
+            Some("a,b"),
+            "bare, as the grid's cell"
         );
-        assert_eq!(row.yank().as_deref(), Some(r#"1,"a,b""#));
+
+        row.toggle_visual();
+        row.up();
+        row.to_strip(Strip::Name);
+
+        assert_eq!(row.yank().as_deref(), Some("id,1\nnote,\"a,b\""));
+    }
+
+    #[test]
+    fn a_new_mode_drops_the_range_and_a_cell_has_no_other_mode() {
+        let mut row = order();
+        row.toggle_visual();
+        row.cycle_mode();
+        assert!(!row.is_selecting());
+
+        let mut cell = cell(text("x"));
+        cell.cycle_mode();
+        assert_eq!(cell.mode(), SelectionMode::Row);
+    }
+
+    #[test]
+    fn row_mode_names_no_strip() {
+        let mut row = order();
+
+        row.to_strip(Strip::Name);
+
+        assert_eq!(row.strip(), Strip::Value);
+    }
+
+    fn searched(inspector: &mut Inspector, term: &str) {
+        inspector.open_search();
+        for character in term.chars() {
+            inspector.search_push(character);
+        }
+    }
+
+    #[test]
+    fn a_search_lands_on_a_name_or_a_value() {
+        let mut row = order();
+
+        searched(&mut row, "tag");
+        assert_eq!((row.cursor(), row.strip()), (2, Strip::Name), "the name");
+
+        row.cancel_search();
+        searched(&mut row, "blue");
+        assert_eq!(
+            (row.cursor(), row.strip()),
+            (4, Strip::Value),
+            "inside the array"
+        );
+    }
+
+    #[test]
+    fn n_walks_every_hit_and_wraps() {
+        let mut row = order();
+        searched(&mut row, "e");
+        row.accept_search();
+        let mut seen = vec![(row.cursor(), row.strip())];
+
+        for _ in 0..3 {
+            row.jump(Direction::Forwards);
+            seen.push((row.cursor(), row.strip()));
+        }
+
+        assert_eq!(
+            seen,
+            [
+                (1, Strip::Name),
+                (3, Strip::Value),
+                (4, Strip::Value),
+                (1, Strip::Name)
+            ],
+            "note, red, blue, round to note"
+        );
+    }
+
+    #[test]
+    fn cancelling_a_search_puts_back_the_cursor_and_the_old_term() {
+        let mut row = order();
+        searched(&mut row, "id");
+        row.accept_search();
+        row.down();
+
+        searched(&mut row, "blue");
+        row.cancel_search();
+
+        assert_eq!(row.cursor(), 1);
+        assert_eq!(row.search().map(Search::as_str), Some("id"));
+        assert!(!row.is_searching());
+    }
+
+    #[test]
+    fn backspacing_past_the_term_cancels() {
+        let mut row = order();
+        searched(&mut row, "x");
+
+        row.search_pop();
+        row.search_pop();
+
+        assert!(!row.is_searching());
+        assert_eq!(row.search(), None);
+    }
+
+    #[test]
+    fn esc_backs_out_of_a_range_then_a_search_then_nothing() {
+        let mut row = order();
+        searched(&mut row, "id");
+        row.accept_search();
+        row.toggle_visual();
+
+        assert!(row.back_out(), "stops extending");
+        assert!(row.back_out(), "drops the range");
+        assert!(row.back_out(), "drops the search");
+        assert!(!row.back_out(), "closing is the caller's");
     }
 
     #[test]

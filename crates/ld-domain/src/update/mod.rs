@@ -478,8 +478,13 @@ fn statement_subject(stmt: &Statement) -> LogSubject {
 }
 
 /// Unwinds the overlay first: replacing a live prompt or theme picker outright
-/// strands what it was previewing.
+/// strands what it was previewing. Stacks over the inspector instead, which
+/// holds what the message is about.
 fn raise(state: &mut State, message: Message) {
+    if let Some(Overlay::Inspect(inspector)) = &mut state.overlay {
+        inspector.raise(message);
+        return;
+    }
     unwind_overlay(state);
     state.overlay = Some(Overlay::Message(message));
 }

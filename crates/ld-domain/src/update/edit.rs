@@ -1,6 +1,6 @@
 //! Editing a cell in place.
 
-use crate::contents::{ContentsState, Subject};
+use crate::contents::{ContentsState, SelectionMode, Subject};
 use crate::edit::Field;
 use crate::key;
 use crate::key::RowKey;
@@ -23,11 +23,6 @@ pub(super) fn start_edit(state: &mut State) -> Vec<Effect> {
             if let Some(Overlay::Inspect(inspector)) = &mut state.overlay {
                 inspector.start_edit(field);
             }
-        }
-        // A modal would take the half-filled form with it.
-        Err(refusal) if matches!(&state.overlay, Some(Overlay::Inspect(inspector)) if inspector.is_inserting()) =>
-        {
-            state.notify(Severity::Warning, refusal);
         }
         Err(refusal) => raise(
             state,
@@ -102,6 +97,12 @@ fn editable(state: &State) -> Result<(Field, bool), String> {
     let Some(Overlay::Inspect(inspector)) = &state.overlay else {
         return Err(String::new());
     };
+    if inspector.mode() == SelectionMode::Column {
+        return Err(
+            "Column mode selects a strip, not a value. Press m for row or cell mode to edit."
+                .to_owned(),
+        );
+    }
     // A typed statement's columns belong to no one table.
     let Subject::Table(table) = inspector.subject() else {
         return Err(

@@ -672,9 +672,13 @@ fn on_email(state: &mut State) {
     }
 }
 
+/// Over the inspector a refusal stacks on it rather than replacing it.
 fn refusal(state: &State) -> Option<String> {
     match &state.overlay {
         Some(Overlay::Message(message)) => Some(message.message.clone()),
+        Some(Overlay::Inspect(inspector)) => {
+            inspector.message().map(|message| message.message.clone())
+        }
         _ => None,
     }
 }
