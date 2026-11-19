@@ -190,6 +190,11 @@ const TABLES: &[Command] = &[
         "fold/unfold, or read",
         Run::In(Panel::Objects),
     ),
+    Command::new(
+        &[Stroke::key(Key::Char('r'))],
+        "refresh the schema",
+        Run::In(Panel::Objects),
+    ),
     DROP_TABLE,
 ];
 
@@ -284,6 +289,11 @@ const CONTENTS: &[Command] = &[
     Command::new(
         &[Stroke::key(Key::Char('Y'))],
         "copy rows as INSERT",
+        Run::In(Panel::Contents),
+    ),
+    Command::new(
+        &[Stroke::key(Key::Char('r'))],
+        "re-run the read",
         Run::In(Panel::Contents),
     ),
     Command::paging(&[Stroke::key(Key::Char('p'))], "fetch the next page"),

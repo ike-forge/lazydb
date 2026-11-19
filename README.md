@@ -125,6 +125,7 @@ The bottom bar shows what the focused panel takes; `?` lists all of it.
 | `Enter` | Open a table; inspect a row or cell |
 | `m` · `v` · `y` | Cycle row / column / cell mode · select rows · copy |
 | `s` / `f` / `c` | Sort / filter / clear filter, in column mode, on fetched rows |
+| `r` | Re-read the schema in Objects; re-run the read in Table contents |
 | `p` / `P` | Fetch the next page / every page |
 | `Y` | Copy the selected rows as `INSERT` statements |
 | `Ctrl-e` | Export rows; open `$EDITOR` from the editor |

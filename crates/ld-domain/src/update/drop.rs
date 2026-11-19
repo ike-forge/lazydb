@@ -4,7 +4,7 @@ use crate::connection::Transaction;
 use crate::contents::{ContentsState, Subject, TableRef};
 use crate::drop::{DropPrompt, Target};
 use crate::jobs::Dropping;
-use crate::log::{Outcome, Trace};
+use crate::log::Outcome;
 use crate::model::{DbError, Key, QueryId, Row};
 use crate::overlay::{Message, Overlay};
 use crate::panel::Panel;
@@ -13,8 +13,8 @@ use crate::style::Severity;
 use crate::tree::Node;
 
 use super::{
-    Decision, Effect, edit_line, logged, raise, refuse_read_only, sentence, spanned,
-    statement_subject, submit, submit_into_contents,
+    Decision, Effect, edit_line, logged, raise, refuse_read_only, spanned, statement_subject,
+    submit, submit_into_contents,
 };
 
 /// Shared by `d` and the hint bar, so the bar cannot promise what the key
@@ -258,15 +258,8 @@ pub(super) fn finish_drop(
             let Some(conn) = state.conn_id() else {
                 return Vec::new();
             };
-            logged(
-                state,
-                sentence("Reading schema"),
-                Outcome::Pending {
-                    trace: Trace::Catalog(conn),
-                },
-            );
 
-            vec![Effect::LoadSchema(conn)]
+            super::connections::read_schema(state, conn)
         }
     }
 }

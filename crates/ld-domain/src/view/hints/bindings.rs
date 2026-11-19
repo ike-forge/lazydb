@@ -126,6 +126,9 @@ pub(super) const NEXT_MATCH: Binding = Binding::new(&[key('n')], "next match");
 /// "open" is true of both a namespace and a table row.
 const OPEN: Binding = Binding::new(&[ENTER], "open");
 pub(super) const DROP: Binding = Binding::new(&[key('d')], "drop");
+/// Greyed while the catalog is on the way, or where a re-read would discard
+/// edits or the statement writes.
+pub(super) const REFRESH: Binding = Binding::new(&[key('r')], "refresh");
 
 /// Only where it opens.
 pub(super) const INSPECT_ROW: Binding = Binding::new(&[ENTER], "inspect");
@@ -150,7 +153,7 @@ pub(super) const FORMAT: Binding = Binding::new(&[ctrl('f')], "format");
 
 // Motion is in no panel's bar: users already reach for it, and the palette
 // lists it.
-const TABLES_HINTS: &[Binding] = &[OPEN, SEARCH, DROP, SELECT];
+const TABLES_HINTS: &[Binding] = &[OPEN, REFRESH, SEARCH, DROP, SELECT];
 
 /// The tabs are taught here: a panel's number focuses it, never a tab.
 const TABS: Binding = Binding::new(&[key('['), key(']')], "tab");
@@ -162,6 +165,7 @@ const DDL_ONE_TAB_HINTS: &[Binding] = &[SEARCH, SELECT];
 
 const CONTENTS_HINTS: &[Binding] = &[
     INSPECT_ROW,
+    REFRESH,
     NEXT_PAGE,
     EVERY_PAGE,
     EXPORT_ROWS,
@@ -178,6 +182,7 @@ const CONTENTS_COLUMN_HINTS: &[Binding] = &[
     FILTER,
     CLEAR_FILTER,
     INSPECT_ROW,
+    REFRESH,
     NEXT_PAGE,
     EVERY_PAGE,
     EXPORT_ROWS,

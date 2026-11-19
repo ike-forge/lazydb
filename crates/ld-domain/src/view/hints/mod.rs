@@ -12,8 +12,8 @@ use bindings::{
     DIAGNOSTICS_GLOBAL, DISCARD, DONE, DROP, DROP_TYPED, DROP_YES_NO, EDIT, ENTER, EVERY_PAGE,
     EXPORT, EXPORT_COPY, EXPORT_OVERWRITE, EXPORT_ROWS, FIELD, FILTER, FORMAT, HISTORY,
     HISTORY_GLOBAL, HISTORY_HINT, INSERT, INSERT_ROW, INSPECT_GLOBAL, INSPECT_ROW, LEAVE, MOVE,
-    NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL, PALETTE_GLOBAL, RUN, SEARCH, SEARCH_GLOBAL, SELECT,
-    SORT, STOP, TOGGLE, UNSET,
+    NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL, PALETTE_GLOBAL, REFRESH, RUN, SEARCH, SEARCH_GLOBAL,
+    SELECT, SORT, STOP, TOGGLE, UNSET,
 };
 pub(crate) use bindings::{GLOBAL, THEMES, THEMES_GLOBAL};
 
@@ -328,6 +328,14 @@ fn live(state: &State, binding: &Binding) -> bool {
             let text = state.queries.text();
             crate::sql::format(state.queries.engine(), &text) != text
         }
+        REFRESH => match state.focus() {
+            Panel::Objects => crate::update::schema_refresh(state).is_some(),
+            Panel::Contents => matches!(
+                crate::update::rerun_of(state),
+                crate::update::Rerun::Read { .. }
+            ),
+            Panel::Structure | Panel::Queries => false,
+        },
         NEXT_PAGE | EVERY_PAGE => state.contents.can_fetch(),
         EXPORT_ROWS => state.contents.row_count() > 0 && state.geometry.export_fits(),
         SORT | FILTER => state.contents.loaded().is_some(),

@@ -90,6 +90,13 @@ impl Log {
         }
     }
 
+    #[must_use]
+    pub fn is_pending(&self, trace: Trace) -> bool {
+        self.entries.iter().any(
+            |entry| matches!(entry.outcome, Outcome::Pending { trace: waiting } if waiting == trace),
+        )
+    }
+
     /// A read that skipped an empty page is still one statement.
     pub fn retrace(&mut self, from: Trace, to: Trace) {
         let pending = self.entries.iter_mut().rev().find(

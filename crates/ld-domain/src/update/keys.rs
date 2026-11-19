@@ -23,6 +23,7 @@ use super::history::{history_key, open_history};
 use super::insert::open_insert;
 use super::inspect::{edit_from_grid, inspect_key, open_inspector};
 use super::palette::{open_palette, palette_key};
+use super::refresh::refresh;
 use super::search::{next_match_key, open_prompt, restore_origin, search_key};
 use super::themes::{open_themes, preview_theme, themes_key};
 use super::yank::{yank, yank_inserts};
@@ -161,6 +162,7 @@ pub(super) fn panel_key(state: &mut State, key: Key) -> Vec<Effect> {
         }
         Key::Char('d') => open_drop(state),
         Key::Char('i') => open_insert(state),
+        Key::Char('r') => return refresh(state),
         Key::Char('p') => return next_page(state),
         Key::Char('P') => return every_page(state),
         Key::Char('v') => toggle_visual(state),

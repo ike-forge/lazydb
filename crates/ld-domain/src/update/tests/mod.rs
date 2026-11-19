@@ -54,6 +54,7 @@ mod palette;
 mod pointer;
 mod queries;
 mod reads;
+mod refresh;
 mod run;
 mod search;
 mod selection;

@@ -38,6 +38,7 @@ mod motion;
 mod navigation;
 mod palette;
 mod pointer;
+mod refresh;
 mod run;
 mod search;
 mod themes;
@@ -74,6 +75,7 @@ pub(crate) use edit::{editable_here, has_uncommitted, nullable_here};
 pub(crate) use history::history_labels;
 pub(crate) use insert::insert_form;
 pub(crate) use inspect::inspection;
+pub(crate) use refresh::{Rerun, rerun_of, schema_refresh};
 pub(crate) use themes::theme_labels;
 
 /// Async results re-enter through the same channel as a keystroke.

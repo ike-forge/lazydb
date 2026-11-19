@@ -264,6 +264,12 @@ pub(super) fn connected(
             took,
         },
     );
+    state.mark_dirty();
+    read_schema(state, conn)
+}
+
+/// A loaded catalog stays on screen until its successor lands.
+pub(super) fn read_schema(state: &mut State, conn: ConnId) -> Vec<Effect> {
     logged(
         state,
         sentence("Reading schema"),
@@ -271,7 +277,6 @@ pub(super) fn connected(
             trace: Trace::Catalog(conn),
         },
     );
-    state.mark_dirty();
     vec![Effect::LoadSchema(conn)]
 }
 

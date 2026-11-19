@@ -741,7 +741,8 @@ fn nothing_but_a_hint_that_would_do_nothing_is_ever_inert() {
                     || hint.action == "export"
                     || hint.action == "drop"
                     || hint.action == "health"
-                    || hint.action == "delete",
+                    || hint.action == "delete"
+                    || hint.action == "refresh",
                 "{panel:?}'s '{} {}' is inert and nothing says why",
                 hint.keys,
                 hint.action
