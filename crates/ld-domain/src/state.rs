@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::buffers::Buffers;
 use crate::clock::Stamp;
 use crate::config::{Config, ConnectionConfig, ConnectionName};
 use crate::connection::{Connection, ConnectionState, SchemaState};
@@ -37,6 +38,7 @@ pub struct State {
     pub log: Log,
     pub histories: Histories,
     pub saved: Saved,
+    pub buffers: Buffers,
     /// So a motion knows how far a page is.
     pub geometry: Geometry,
     pub overlay: Option<Overlay>,
@@ -151,6 +153,16 @@ impl State {
     pub fn history(&self) -> &[crate::history::Entry] {
         self.connected_name()
             .map_or(&[], |name| self.histories.of(name))
+    }
+
+    /// After [`init`](crate::init), which may have chosen the default
+    /// connection already: the editor shows its buffer.
+    pub fn restore_buffers(&mut self, mut buffers: Buffers) {
+        if let Some(owner) = self.buffers.owner().cloned() {
+            self.queries.replace(buffers.of(&owner));
+            buffers.own(owner);
+        }
+        self.buffers = buffers;
     }
 
     /// What the history and the saved queries are keyed by.

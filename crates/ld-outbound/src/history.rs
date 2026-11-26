@@ -1,5 +1,5 @@
 //! The [`Store`] port over `$XDG_STATE_HOME/lazydb/history.toml`, and
-//! `saved.toml` beside it. State, not cache: cleaners may empty a cache.
+//! `saved.toml` and `buffers.toml` beside it. State, not cache: cleaners may empty a cache.
 //! `CREATE ROLE … PASSWORD` is a statement, so each file is 0600 in a 0700
 //! directory.
 //!
@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use ld_domain::buffers::Buffers;
 use ld_domain::clock::Stamp;
 use ld_domain::config::{Config, ConnectionName, Diagnostic, Origin};
 use ld_domain::engine::Engine;
@@ -156,6 +157,7 @@ pub(crate) fn fields(out: &mut String, entry: &Stored) {
 pub struct FileStore {
     path: Option<PathBuf>,
     saved: Option<PathBuf>,
+    buffers: Option<PathBuf>,
     /// Saves read-modify-write one file; two at once would each start from the
     /// old file.
     writes: tokio::sync::Mutex<()>,
@@ -167,13 +169,16 @@ impl FileStore {
         Self::at(path(xdg_state, home))
     }
 
-    /// The saved queries beside `path`.
+    /// The saved queries and buffers beside `path`.
     #[must_use]
     pub fn at(path: Option<PathBuf>) -> Self {
         Self {
             saved: path
                 .as_ref()
                 .map(|path| path.with_file_name(crate::saved::FILE)),
+            buffers: path
+                .as_ref()
+                .map(|path| path.with_file_name(crate::buffers::FILE)),
             path,
             writes: tokio::sync::Mutex::new(()),
         }
@@ -330,6 +335,62 @@ impl Store for FileStore {
         );
 
         write(path, &crate::saved::render(&sections))
+            .await
+            .map_err(failed)
+    }
+
+    async fn load_buffers(&self) -> (Buffers, Vec<Diagnostic>) {
+        let Some(path) = &self.buffers else {
+            return (Buffers::default(), Vec::new());
+        };
+        let source = match Self::read(path).await {
+            Ok(Some(source)) => source,
+            Ok(None) => return (Buffers::default(), Vec::new()),
+            Err(error) => {
+                let message = format!("query buffers not read: {error}");
+                return (Buffers::default(), vec![warning(path, message)]);
+            }
+        };
+
+        match crate::buffers::parse(&source) {
+            Ok(sections) => crate::buffers::restore(sections, path),
+            // Not replaced, as the saved queries: the user typed them.
+            Err(message) => {
+                let message =
+                    format!("query buffers ignored; fix the file to keep them: {message}");
+                (Buffers::default(), vec![warning(path, message)])
+            }
+        }
+    }
+
+    async fn save_buffer(&self, connection: &ConnectionName, text: &str) -> Result<(), StoreError> {
+        let Some(path) = &self.buffers else {
+            return Err(StoreError::Unavailable(
+                "neither XDG_STATE_HOME nor HOME is set".to_owned(),
+            ));
+        };
+        let failed =
+            |error: std::io::Error| StoreError::Unavailable(format!("{}: {error}", path.display()));
+        let _one_at_a_time = self.writes.lock().await;
+
+        let source = Self::read(path).await.map_err(failed)?;
+        let mut sections = match source.as_deref().map(crate::buffers::parse) {
+            Some(Ok(sections)) => sections,
+            None => crate::buffers::Sections::default(),
+            Some(Err(message)) => {
+                return Err(StoreError::Unavailable(format!(
+                    "{}: not overwritten, it does not parse: {message}",
+                    path.display()
+                )));
+            }
+        };
+        if text.is_empty() {
+            sections.remove(connection.as_str());
+        } else {
+            sections.insert(connection.as_str().to_owned(), text.to_owned());
+        }
+
+        write(path, &crate::buffers::render(&sections))
             .await
             .map_err(failed)
     }

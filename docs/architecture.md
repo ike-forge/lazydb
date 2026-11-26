@@ -84,7 +84,7 @@ every word of every statement, so a data-modifying `WITH` or
 | `Database` | connect, describe, transaction state, execute, execute paged |
 | `ConfigSource` / `ConfigSink` | layered config; theme write-back |
 | `SecretResolver` | literal / env / file; `~/.pgpass` and `cqlshrc` in their adapters |
-| `Store` | query history and saved queries: statement, time, engine, database per entry, a name per saved one |
+| `Store` | query history and saved queries: statement, time, engine, database per entry, a name per saved one; the query buffer per connection |
 | `Writer` | export sinks |
 
 `ld_outbound::engines::Engines` implements `Database` over both adapters and
@@ -122,6 +122,13 @@ engine), then the three history layers. A query hits a saved name before any
 statement: the two scores do not compare. Saved queries sit in `saved.toml`
 beside `history.toml`, keyed by connection, one name per connection, case
 aside; the history limit does not bound them.
+
+The buffer belongs to the connection last chosen, connected or not, and sits
+in `buffers.toml`, text only. Choosing another connection writes the one left
+and shows the one chosen; text typed before any choice goes to the first
+connection that has none. A tick writes it at most every two seconds when it
+changed, and quitting writes it before the app exits. An unparsable file is
+reported and left alone, as `saved.toml` is.
 
 ## 7. Paging
 

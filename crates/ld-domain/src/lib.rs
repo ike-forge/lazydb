@@ -2,6 +2,7 @@
 //! change anything else. No I/O, no runtime, no terminal (architecture.md §2).
 
 pub mod array;
+pub mod buffers;
 pub mod bytes;
 pub mod cell;
 pub mod clock;

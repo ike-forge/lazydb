@@ -2,6 +2,7 @@
 //! only crate that talks to the outside world.
 
 pub mod buffer;
+mod buffers;
 pub mod cassandra;
 mod catalog;
 pub mod clock;

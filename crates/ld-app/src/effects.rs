@@ -118,6 +118,27 @@ pub(crate) fn run(
             tokio::spawn(save(tx.clone(), Arc::clone(sink), theme.clone()));
         }
 
+        Effect::SaveHistory { .. } | Effect::SaveQueries { .. } | Effect::SaveBuffer { .. } => {
+            persist(tx, store, effect);
+        }
+
+        Effect::Cancel(query) => running.abort(*query),
+
+        Effect::ProbeTransaction(conn) => {
+            let (tx, cluster, conn) = (tx.clone(), Arc::clone(cluster), *conn);
+            tokio::spawn(async move {
+                let transaction = cluster.transaction(conn).await;
+                let _sent = tx.send(Msg::Transaction { conn, transaction }.into());
+            });
+        }
+
+        Effect::RecordHistory(_) | Effect::OpenEditor { .. } | Effect::Quit => {}
+    }
+}
+
+/// The store's writes, one task each.
+fn persist(tx: &UnboundedSender<Incoming>, store: &Arc<dyn Store>, effect: &Effect) {
+    match effect {
         Effect::SaveHistory {
             connection,
             entries,
@@ -142,17 +163,16 @@ pub(crate) fn run(
             ));
         }
 
-        Effect::Cancel(query) => running.abort(*query),
-
-        Effect::ProbeTransaction(conn) => {
-            let (tx, cluster, conn) = (tx.clone(), Arc::clone(cluster), *conn);
-            tokio::spawn(async move {
-                let transaction = cluster.transaction(conn).await;
-                let _sent = tx.send(Msg::Transaction { conn, transaction }.into());
-            });
+        Effect::SaveBuffer { connection, text } => {
+            tokio::spawn(save_buffer(
+                tx.clone(),
+                Arc::clone(store),
+                connection.clone(),
+                text.clone(),
+            ));
         }
 
-        Effect::RecordHistory(_) | Effect::OpenEditor { .. } | Effect::Quit => {}
+        _ => {}
     }
 }
 
@@ -284,8 +304,27 @@ async fn save_queries(
     }
 }
 
+/// A trail line, as [`save_history`]. Awaited by the main loop on quit.
+pub(crate) async fn save_buffer(
+    tx: UnboundedSender<Incoming>,
+    store: Arc<dyn Store>,
+    connection: ConnectionName,
+    text: String,
+) {
+    if let Err(error) = store.save_buffer(&connection, &text).await {
+        // A closed channel means the main loop has ended.
+        let _sent = tx.send(
+            Msg::BufferSaveFailed {
+                reason: error.to_string(),
+            }
+            .into(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use ld_domain::buffers::Buffers;
     use ld_domain::config::{Config, Diagnostic};
     use ld_domain::history::{Entry, Histories};
     use ld_domain::ports::{ConfigSink, ConfigWriteError, StoreError};
@@ -377,6 +416,18 @@ mod tests {
             &self,
             _connection: &ConnectionName,
             _queries: &[SavedQuery],
+        ) -> Result<(), StoreError> {
+            self.0.clone()
+        }
+
+        async fn load_buffers(&self) -> (Buffers, Vec<Diagnostic>) {
+            (Buffers::default(), Vec::new())
+        }
+
+        async fn save_buffer(
+            &self,
+            _connection: &ConnectionName,
+            _text: &str,
         ) -> Result<(), StoreError> {
             self.0.clone()
         }

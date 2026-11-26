@@ -6,6 +6,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 
+use crate::buffers::Buffers;
 use crate::config::{
     ClipboardMb, Config, ConnectionConfig, ConnectionName, Credential, Diagnostic, DriverConfig,
     PageSize,
@@ -79,6 +80,12 @@ pub trait Store: Send + Sync {
         connection: &ConnectionName,
         queries: &[SavedQuery],
     ) -> Result<(), StoreError>;
+
+    /// Never fails, as [`Store::load`].
+    async fn load_buffers(&self) -> (Buffers, Vec<Diagnostic>);
+
+    /// An empty `text` forgets the connection's buffer.
+    async fn save_buffer(&self, connection: &ConnectionName, text: &str) -> Result<(), StoreError>;
 }
 
 /// Refusing to overwrite is this port's job: a separate `exists` call would

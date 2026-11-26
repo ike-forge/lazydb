@@ -32,6 +32,7 @@ use crate::view::Stroke;
 use crate::view::tests_support::tabled;
 use crate::viewport::{Cursor, Span};
 
+mod buffers;
 mod columns;
 mod commit;
 mod connections;

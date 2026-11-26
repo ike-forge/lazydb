@@ -25,6 +25,7 @@ use crate::tree::Node;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+mod buffers;
 mod commit;
 mod connections;
 mod drop;
@@ -46,6 +47,7 @@ mod themes;
 mod visual;
 mod yank;
 
+use buffers::{keep_buffer, swap_buffer};
 use commit::uncommitted;
 use connections::{
     connect, connect_failed, connected, default_connection_index, schema_failed, schema_loaded,
@@ -138,6 +140,10 @@ pub enum Msg {
     SavedQueriesFailed {
         reason: String,
     },
+    /// The next change writes the whole buffer again.
+    BufferSaveFailed {
+        reason: String,
+    },
     /// A running total, not a delta.
     ExportProgress {
         job: JobId,
@@ -191,6 +197,11 @@ pub enum Effect {
     SaveQueries {
         connection: ConnectionName,
         queries: Vec<crate::saved::SavedQuery>,
+    },
+    /// The connection's whole buffer; empty forgets it.
+    SaveBuffer {
+        connection: ConnectionName,
+        text: String,
     },
     /// Run on the main loop rather than as a task: the editor needs the
     /// terminal.
@@ -397,6 +408,16 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
 
+        Msg::BufferSaveFailed { reason } => {
+            logged(
+                state,
+                sentence("Saving the query buffer"),
+                Outcome::Failed { detail: reason },
+            );
+            state.notify(Severity::Warning, "query buffer not saved, see the logs");
+            Vec::new()
+        }
+
         Msg::ExportProgress { job, rows } => export_progress(state, job, rows),
 
         Msg::ExportFinished { job, result, took } => finish_export(state, job, result, took),
@@ -422,6 +443,10 @@ fn tick(state: &mut State, now: Stamp) -> Vec<Effect> {
     if state.toast.as_mut().is_some_and(Toast::spend) {
         state.toast = None;
         state.mark_dirty();
+    }
+
+    if state.buffers.due(now) {
+        return keep_buffer(state).into_iter().collect();
     }
 
     Vec::new()
@@ -482,6 +507,7 @@ fn quit_now(state: &mut State) -> Vec<Effect> {
     in_flight
         .into_iter()
         .map(Effect::Cancel)
+        .chain(keep_buffer(state))
         .chain(std::iter::once(Effect::Quit))
         .collect()
 }

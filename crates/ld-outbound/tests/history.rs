@@ -283,3 +283,47 @@ async fn a_saved_file_that_does_not_parse_is_reported_and_not_overwritten() {
         "[connections.dev\n"
     );
 }
+
+#[tokio::test]
+async fn buffers_live_beside_the_history_and_an_empty_one_is_forgotten() {
+    let directory = scratch("buffers-roundtrip").join("state");
+    let store = FileStore::at(Some(directory.join("history.toml")));
+
+    for (connection, text) in [
+        ("dev", "SELECT *\nFROM \"orders\";\n"),
+        ("prod", "SELECT 1;"),
+        ("prod", ""),
+    ] {
+        store
+            .save_buffer(&name(connection), text)
+            .await
+            .expect("written");
+    }
+
+    let (loaded, diagnostics) = FileStore::at(Some(directory.join("history.toml")))
+        .load_buffers()
+        .await;
+
+    assert!(directory.join("buffers.toml").exists());
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(loaded.of(&name("dev")), "SELECT *\nFROM \"orders\";\n");
+    assert_eq!(loaded.of(&name("prod")), "");
+}
+
+#[tokio::test]
+async fn a_buffers_file_that_does_not_parse_is_reported_and_not_overwritten() {
+    let directory = scratch("buffers-broken");
+    let path = directory.join("buffers.toml");
+    std::fs::write(&path, "[connections.dev\n").expect("written");
+    let store = FileStore::at(Some(directory.join("history.toml")));
+
+    let (_loaded, diagnostics) = store.load_buffers().await;
+    let saving = store.save_buffer(&name("dev"), "SELECT 1;").await;
+
+    assert_eq!(diagnostics.len(), 1);
+    assert!(saving.is_err());
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("still there"),
+        "[connections.dev\n"
+    );
+}

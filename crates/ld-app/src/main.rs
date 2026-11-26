@@ -164,12 +164,15 @@ async fn run(
     diagnostics.extend(history_diagnostics);
     let (saved, saved_diagnostics) = store.load_saved(&config).await;
     diagnostics.extend(saved_diagnostics);
+    let (buffers, buffer_diagnostics) = store.load_buffers().await;
+    diagnostics.extend(buffer_diagnostics);
     let themes = Themes::new(&config.themes, config.background);
 
     let config_home = ld_outbound::config::global_path();
     let (mut state, startup) = ld_domain::init(config, diagnostics, ld_outbound::clock::now());
     state.histories = histories;
     state.saved = saved;
+    state.restore_buffers(buffers);
     state.cwd = std::env::current_dir().unwrap_or_default();
     state.config_home = config_home;
     let mut measured: Option<Geometry> = None;
@@ -203,6 +206,15 @@ async fn run(
                     if let Effect::OpenEditor { buffer } = &effect {
                         let outcome = editor::open(&mut terminal, capture, &suspension, buffer)?;
                         let _sent = tx.send(outcome.into());
+                        continue;
+                    }
+                    // Awaited: the runtime would drop the task on the way out.
+                    if let Effect::SaveBuffer { connection, text } = &effect
+                        && state.should_quit
+                    {
+                        let store = Arc::clone(&store);
+                        effects::save_buffer(tx.clone(), store, connection.clone(), text.clone())
+                            .await;
                         continue;
                     }
 

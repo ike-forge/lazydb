@@ -211,6 +211,7 @@ pub(super) fn connect(state: &mut State, target: ConnectionConfig) -> Vec<Effect
         conn,
         name: target.name.clone(),
     };
+    effects.extend(super::swap_buffer(state, &target.name));
     state.queries.speak(target.engine());
     state.log.push(Entry::new(
         state.now,
