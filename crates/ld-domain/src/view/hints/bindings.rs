@@ -18,6 +18,10 @@ const fn ctrl(character: char) -> Stroke {
     Stroke::ctrl(Key::Char(character))
 }
 
+const fn alt(character: char) -> Stroke {
+    Stroke::alt(Key::Char(character))
+}
+
 pub(super) const PALETTE: Stroke = key('?');
 
 /// Closes the common tail: the one hint that finds every other binding. Panel
@@ -92,6 +96,9 @@ pub(super) const HISTORY_HINT: Binding = Binding::new(&[ctrl('r')], "history");
 
 /// Typing is the search, so no `/`.
 pub(super) const HISTORY: &[Binding] = &[Binding::new(&[ctrl('r')], "layer")];
+/// A history row goes at once; a saved query asks for a second press.
+pub(super) const FORGET: Binding = Binding::new(&[alt('d')], "delete");
+pub(super) const FORGET_ARMED: Binding = Binding::new(&[alt('d')], "delete it");
 
 /// `⏎` appends and runs nothing, the difference from `ctrl-x` worth saying. No
 /// `q`: it is a letter of the query.

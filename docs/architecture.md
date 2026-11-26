@@ -123,6 +123,11 @@ statement: the two scores do not compare. Saved queries sit in `saved.toml`
 beside `history.toml`, keyed by connection, one name per connection, case
 aside; the history limit does not bound them.
 
+`alt-d` deletes the row under the cursor; the picker types its query, so the
+key needs a modifier. A history row goes at once, with every run the layer
+folded into it; a saved query goes on the second press, and any other key in
+between takes the question back.
+
 The buffer belongs to the connection last chosen, connected or not, and sits
 in `buffers.toml`, text only. Choosing another connection writes the one left
 and shows the one chosen; text typed before any choice goes to the first

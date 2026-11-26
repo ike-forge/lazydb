@@ -419,3 +419,123 @@ fn the_history_off_still_recalls_saved_queries() {
     };
     assert_eq!(picker.layer, Layer::Default);
 }
+
+fn delete_key(state: &mut State) -> Vec<Effect> {
+    press_binding(state, KeyPress::alt(Key::Char('d')))
+}
+
+/// `one` and `two` saved, `SELECT 3;` run, the picker open on them.
+fn picking() -> State {
+    let mut state = writing("SELECT 1;");
+    save_as(&mut state, "one");
+    state.queries.replace("SELECT 2;");
+    save_as(&mut state, "two");
+    state.queries.replace("SELECT 3;");
+    ctrl(&mut state, Key::Char('x'));
+    state.focus_on(Panel::Queries);
+    state.queries.replace("");
+    ctrl(&mut state, Key::Char('r'));
+    state
+}
+
+#[test]
+fn alt_d_on_a_saved_query_asks_before_deleting() {
+    let mut state = picking();
+
+    let effects = delete_key(&mut state);
+
+    assert!(effects.is_empty());
+    assert_eq!(saved_on_local(&state).len(), 2);
+    assert_eq!(
+        toasted(&state),
+        Some((Severity::Warning, "alt-d again deletes `two`"))
+    );
+}
+
+#[test]
+fn alt_d_twice_deletes_the_saved_query_and_writes_the_rest() {
+    let mut state = picking();
+
+    delete_key(&mut state);
+    let effects = delete_key(&mut state);
+
+    assert_eq!(saved_on_local(&state), pairs(&[("one", "SELECT 1;")]));
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::SaveQueries { connection, queries }]
+            if connection.as_str() == "local" && queries.len() == 1
+    ));
+    assert_eq!(
+        picked(&state),
+        pairs(&[("one", "SELECT 1;"), ("", "SELECT 3;")])
+    );
+    assert_eq!(toasted(&state), Some((Severity::Info, "deleted `two`")));
+}
+
+#[test]
+fn any_other_key_between_takes_the_question_back() {
+    let mut state = picking();
+
+    delete_key(&mut state);
+    press(&mut state, Key::Down);
+    press(&mut state, Key::Up);
+    let effects = delete_key(&mut state);
+
+    assert!(effects.is_empty());
+    assert_eq!(saved_on_local(&state).len(), 2);
+}
+
+#[test]
+fn the_second_press_on_another_saved_query_asks_about_that_one() {
+    let mut state = picking();
+    delete_key(&mut state);
+    if let Some(Overlay::History(picker)) = &mut state.overlay {
+        picker.cursor.down(3);
+    }
+
+    let effects = delete_key(&mut state);
+
+    assert!(effects.is_empty());
+    assert_eq!(
+        toasted(&state),
+        Some((Severity::Warning, "alt-d again deletes `one`"))
+    );
+}
+
+#[test]
+fn the_bar_offers_alt_d_and_then_the_confirmation() {
+    let mut state = picking();
+    let offered = |state: &State| -> Option<(String, &'static str)> {
+        bar(state)
+            .panel
+            .into_iter()
+            .find(|hint| hint.keys == "alt-d")
+            .map(|hint| (hint.keys, hint.action))
+    };
+
+    assert_eq!(offered(&state), Some(("alt-d".to_owned(), "delete")));
+
+    delete_key(&mut state);
+
+    assert_eq!(offered(&state), Some(("alt-d".to_owned(), "delete it")));
+}
+
+#[test]
+fn deleting_the_last_saved_query_in_the_saved_layer_moves_to_the_next_layer() {
+    let mut state = writing("SELECT 1;");
+    save_as(&mut state, "one");
+    state.queries.replace("SELECT 2;");
+    ctrl(&mut state, Key::Char('x'));
+    state.focus_on(Panel::Queries);
+    state.queries.replace("");
+    ctrl(&mut state, Key::Char('r'));
+    ctrl(&mut state, Key::Char('r'));
+
+    delete_key(&mut state);
+    delete_key(&mut state);
+
+    let Some(Overlay::History(picker)) = &state.overlay else {
+        panic!("the history is open");
+    };
+    assert_eq!(picker.layer, Layer::Connection);
+}
