@@ -492,6 +492,18 @@ mod tests {
     }
 
     #[test]
+    fn a_comparison_keeps_its_characters_together() {
+        assert_eq!(
+            formatted("select * from t where a<>1 and b >= 2 and c!=3"),
+            "SELECT *\nFROM t\nWHERE a <> 1\n  AND b >= 2\n  AND c != 3"
+        );
+        assert_eq!(
+            formatted_in(Engine::Cassandra, "SELECT * FROM t WHERE k<=1"),
+            "SELECT *\nFROM t\nWHERE k <= 1"
+        );
+    }
+
+    #[test]
     fn a_bracket_hugs_what_it_subscripts_or_types() {
         assert_eq!(
             formatted("select a[1], '{x}'::text[] from t"),

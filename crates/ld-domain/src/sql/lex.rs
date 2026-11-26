@@ -134,7 +134,36 @@ fn run(engine: Engine, source: &[char], at: usize) -> (Kind, usize) {
         }
     }
 
+    if let Some(len) = operator(engine, source, at) {
+        return (Kind::Punctuation, len);
+    }
+
     (Kind::Punctuation, 1)
+}
+
+/// One piece, or the formatter splits `>=` into `> =`. Postgres's rule: a run
+/// ends in `+` or `-` only beside one of ``~!@#%^&|`?``, so `a=-1` negates.
+fn operator(engine: Engine, source: &[char], at: usize) -> Option<usize> {
+    let is_operator = |c: char| match engine {
+        Engine::Postgres => "+-*/<>=~!@#%^&|`?".contains(c),
+        Engine::Cassandra => "+-<>=!".contains(c),
+    };
+
+    let mut len = 0;
+    while source.get(at + len).copied().is_some_and(is_operator) {
+        if len > 0 && comment(engine, source, at + len).is_some() {
+            break;
+        }
+        len += 1;
+    }
+
+    let run = &source[at..at + len];
+    let exempt = run.iter().any(|c| "~!@#%^&|`?".contains(*c));
+    while len > 1 && !exempt && matches!(run[len - 1], '+' | '-') {
+        len -= 1;
+    }
+
+    (len > 1).then_some(len)
 }
 
 /// An unterminated block runs to the end of the buffer. Postgres's blocks
@@ -518,13 +547,39 @@ mod tests {
         );
         assert_eq!(
             kinds_only("a//b"),
+            [Kind::Identifier, Kind::Punctuation, Kind::Identifier]
+        );
+    }
+
+    #[test]
+    fn a_comparison_is_one_piece() {
+        for operator in ["<>", "!=", "<=", ">=", "||", "->>", "@>"] {
+            assert_eq!(
+                kinds(&format!("a{operator}b"))[1],
+                (Kind::Punctuation, operator.to_owned()),
+                "{operator}"
+            );
+        }
+        assert_eq!(
+            kinds_in(Engine::Cassandra, "a!=b")[1],
+            (Kind::Punctuation, "!=".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_operator_stops_at_a_comment_and_before_a_sign() {
+        assert_eq!(
+            kinds("a=-1")[1..3],
             [
-                Kind::Identifier,
-                Kind::Punctuation,
-                Kind::Punctuation,
-                Kind::Identifier,
+                (Kind::Punctuation, "=".to_owned()),
+                (Kind::Punctuation, "-".to_owned()),
             ]
         );
+        assert_eq!(
+            kinds_only("a>--x"),
+            [Kind::Identifier, Kind::Punctuation, Kind::Comment]
+        );
+        assert_eq!(kinds("a@-1")[1], (Kind::Punctuation, "@-".to_owned()));
     }
 
     #[test]
