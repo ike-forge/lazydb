@@ -17,8 +17,8 @@ the engines' own tools.
   Cassandra's table options and replication.
 - **Write SQL or CQL with context.** The editor speaks the connection's
   language: schema-aware completion, highlighting, formatting, `$EDITOR`,
-  fuzzy-searched history per connection, per engine or across all, and a
-  session log.
+  named saved queries, fuzzy-searched history per connection, per engine or
+  across all, and a session log.
 - **Explore and export.** Paging, local sort and filter, full-value
   inspection, clipboard yanks, CSV/JSON export, rows copied as `INSERT`s.
 - **Control writes.** Read-only by default. Cell edits, inserts and deletes
@@ -133,11 +133,11 @@ The bottom bar shows what the focused panel takes; `?` lists all of it.
 | `Y` | Copy the selected rows as `INSERT` statements |
 | `Ctrl-e` | Export rows; open `$EDITOR` from the editor |
 | `Ctrl-x` · `Ctrl-f` | Run the statement · format the buffer |
-| `Ctrl-r` | Query history; type to search, `Ctrl-r` again for this engine, then all |
+| `Ctrl-r` | Saved queries and history; type to search, `Ctrl-r` again for the next layer |
 | `e` · `i` · `d` | Edit a cell · insert a row · delete rows or drop an object |
 | `x` | In the inspector: stage `NULL` |
 | `/` · `m` · `v` · `y` | In the inspector: the same, over its name / value table |
-| `Ctrl-s` | Preview and commit staged edits |
+| `Ctrl-s` | Preview and commit staged edits; in the editor, name and save the statement |
 | `Ctrl-o` / `Ctrl-t` | Connection picker / theme picker |
 | `Ctrl-c` | Cancel running queries |
 | `Esc` / `q` | Back out one step / quit |

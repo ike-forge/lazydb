@@ -84,7 +84,7 @@ every word of every statement, so a data-modifying `WITH` or
 | `Database` | connect, describe, transaction state, execute, execute paged |
 | `ConfigSource` / `ConfigSink` | layered config; theme write-back |
 | `SecretResolver` | literal / env / file; `~/.pgpass` and `cqlshrc` in their adapters |
-| `Store` | query history: statement, time, engine, database per entry |
+| `Store` | query history and saved queries: statement, time, engine, database per entry, a name per saved one |
 | `Writer` | export sinks |
 
 `ld_outbound::engines::Engines` implements `Database` over both adapters and
@@ -115,6 +115,13 @@ its engine, so the picker's engine layer spans connections; an entry from a
 file older than that takes its connection's engine from the config. Entries
 fold as SQL for both engines, which fold names and keywords alike, so one
 statement is one row across engines.
+
+`ctrl-r` cycles five layers: default (the connection's saved queries, then
+its history, a saved statement listed once), saved (every connection on the
+engine), then the three history layers. A query hits a saved name before any
+statement: the two scores do not compare. Saved queries sit in `saved.toml`
+beside `history.toml`, keyed by connection, one name per connection, case
+aside; the history limit does not bound them.
 
 ## 7. Paging
 

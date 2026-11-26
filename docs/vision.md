@@ -87,8 +87,8 @@ options and keyspace replication, in an Options tab only such tables have.
 - **Phase 2 — More SQL engines.** MySQL/MariaDB, then SQL Server and Oracle.
   Each is an `Engine` variant, a dialect (lexer rules, keywords, literals,
   DDL) and an adapter; architecture.md §6 lists the seams.
-- **Phase 3 — Extend.** User keybindings, saved queries, several connections
-  open at once.
+- **Phase 3 — Extend.** User keybindings, saved queries (saving and recall
+  done; deleting next), several connections open at once.
 
 ## 7. Non-goals
 
