@@ -23,6 +23,7 @@ mod logs;
 mod overlay;
 mod palette;
 pub mod render;
+mod save;
 pub mod theme;
 mod themes;
 mod toast;

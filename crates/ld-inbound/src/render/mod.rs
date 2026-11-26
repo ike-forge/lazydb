@@ -141,6 +141,7 @@ pub fn render(frame: &mut Frame, view: &ViewModel, theme: Theme) -> Rendered {
             .with_log(log_lines, log_selection)
             .with_export_fits(room.export_fits)
             .with_drop_fits(room.drop_fits)
+            .with_save_fits(room.save_fits)
             .with_grid_width(grid_width)
             .with_theme_rows(room.theme_rows)
             .with_connection_rows(room.connection_rows)
@@ -163,6 +164,7 @@ struct Room {
     history_rows: usize,
     export_fits: bool,
     drop_fits: bool,
+    save_fits: bool,
     inspector_rows: usize,
     commit_rows: usize,
 }
@@ -176,6 +178,7 @@ impl Room {
             history_rows: crate::history::visible_rows(area),
             export_fits: crate::export::fits(area),
             drop_fits: crate::drop::fits(area),
+            save_fits: crate::save::fits(area),
             inspector_rows: crate::inspect::visible_rows(area),
             commit_rows: crate::commit::visible_rows(area),
         }
@@ -271,6 +274,7 @@ fn render_overlay(frame: &mut Frame, view: &ViewModel, hint_bar: Rect, theme: Th
         }
         Some(
             OverlayView::Drop(_)
+            | OverlayView::Save(_)
             | OverlayView::Export(_)
             | OverlayView::Commit(_)
             | OverlayView::Discard { .. }
@@ -292,6 +296,10 @@ fn render_measured(frame: &mut Frame, view: &ViewModel, theme: Theme) -> Wrapped
         },
         Some(OverlayView::Export(view)) => Wrapped {
             modal: crate::export::render(frame, view, pressed, theme),
+            ..Wrapped::default()
+        },
+        Some(OverlayView::Save(view)) => Wrapped {
+            modal: crate::save::render(frame, view, pressed, theme),
             ..Wrapped::default()
         },
         Some(OverlayView::Inspect(view)) => {
@@ -370,6 +378,8 @@ fn dims_the_panels(overlay: Option<&OverlayView>) -> bool {
             | OverlayView::Themes { .. }
             | OverlayView::Connections { .. }
             | OverlayView::History(_)
+            // Repeats the statement it names.
+            | OverlayView::Save(_)
             | OverlayView::Diagnostics { .. }
             // A drop names its own subject.
             | OverlayView::Drop(_)

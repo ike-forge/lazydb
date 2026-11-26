@@ -1,6 +1,7 @@
-//! The [`Store`] port over `$XDG_STATE_HOME/lazydb/history.toml`. State,
-//! not cache: cleaners may empty a cache. `CREATE ROLE … PASSWORD` is a
-//! statement, so the file is 0600 in a 0700 directory.
+//! The [`Store`] port over `$XDG_STATE_HOME/lazydb/history.toml`, and
+//! `saved.toml` beside it. State, not cache: cleaners may empty a cache.
+//! `CREATE ROLE … PASSWORD` is a statement, so each file is 0600 in a 0700
+//! directory.
 //!
 //! [`Store`]: ld_domain::ports::Store
 
@@ -14,6 +15,7 @@ use ld_domain::config::{Config, ConnectionName, Diagnostic, Origin};
 use ld_domain::engine::Engine;
 use ld_domain::history::{Entry, Histories};
 use ld_domain::ports::{Store, StoreError};
+use ld_domain::saved::{Saved, SavedQuery};
 use ld_domain::style::Severity;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
@@ -54,15 +56,15 @@ enum Wire {
 /// As the file holds it: an engine this build does not know survives a save
 /// by another connection.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct Stored {
-    statement: String,
-    at: Option<u64>,
-    engine: Option<String>,
-    database: Option<String>,
+pub(crate) struct Stored {
+    pub(crate) statement: String,
+    pub(crate) at: Option<u64>,
+    pub(crate) engine: Option<String>,
+    pub(crate) database: Option<String>,
 }
 
 impl Stored {
-    fn of(entry: &Entry) -> Self {
+    pub(crate) fn of(entry: &Entry) -> Self {
         Self {
             statement: entry.statement.clone(),
             at: entry.at.map(Stamp::unix),
@@ -72,7 +74,7 @@ impl Stored {
     }
 
     /// `fallback` for an entry that names no engine, or one this build lacks.
-    fn entry(self, fallback: Engine) -> Entry {
+    pub(crate) fn entry(self, fallback: Engine) -> Entry {
         let engine = Engine::ALL
             .into_iter()
             .find(|engine| self.engine.as_deref() == Some(engine.key()))
@@ -125,16 +127,7 @@ fn render(sections: &Sections) -> String {
 
         for entry in entries {
             out.push_str("  { ");
-            if let Some(at) = entry.at {
-                let _written = write!(out, "at = {at}, ");
-            }
-            if let Some(engine) = &entry.engine {
-                let _written = write!(out, "engine = {}, ", quote(engine));
-            }
-            if let Some(database) = &entry.database {
-                let _written = write!(out, "database = {}, ", quote(database));
-            }
-            let _written = writeln!(out, "statement = {} }},", quote(&entry.statement));
+            fields(&mut out, entry);
         }
 
         out.push_str("]\n");
@@ -143,9 +136,26 @@ fn render(sections: &Sections) -> String {
     out
 }
 
+/// The rest of an inline table, closing it: the statement last so the
+/// metadata lines up.
+pub(crate) fn fields(out: &mut String, entry: &Stored) {
+    // Writing into a String cannot fail.
+    if let Some(at) = entry.at {
+        let _written = write!(out, "at = {at}, ");
+    }
+    if let Some(engine) = &entry.engine {
+        let _written = write!(out, "engine = {}, ", quote(engine));
+    }
+    if let Some(database) = &entry.database {
+        let _written = write!(out, "database = {}, ", quote(database));
+    }
+    let _written = writeln!(out, "statement = {} }},", quote(&entry.statement));
+}
+
 #[derive(Debug)]
 pub struct FileStore {
     path: Option<PathBuf>,
+    saved: Option<PathBuf>,
     /// Saves read-modify-write one file; two at once would each start from the
     /// old file.
     writes: tokio::sync::Mutex<()>,
@@ -157,9 +167,13 @@ impl FileStore {
         Self::at(path(xdg_state, home))
     }
 
+    /// The saved queries beside `path`.
     #[must_use]
     pub fn at(path: Option<PathBuf>) -> Self {
         Self {
+            saved: path
+                .as_ref()
+                .map(|path| path.with_file_name(crate::saved::FILE)),
             path,
             writes: tokio::sync::Mutex::new(()),
         }
@@ -182,7 +196,7 @@ impl FileStore {
     }
 }
 
-fn warning(path: &Path, message: String) -> Diagnostic {
+pub(crate) fn warning(path: &Path, message: String) -> Diagnostic {
     Diagnostic {
         origin: Origin::new(&path.display().to_string()),
         span: None,
@@ -260,10 +274,69 @@ impl Store for FileStore {
 
         write(path, &render(&sections)).await.map_err(failed)
     }
+
+    async fn load_saved(&self, config: &Config) -> (Saved, Vec<Diagnostic>) {
+        let Some(path) = &self.saved else {
+            return (Saved::default(), Vec::new());
+        };
+        let source = match Self::read(path).await {
+            Ok(Some(source)) => source,
+            Ok(None) => return (Saved::default(), Vec::new()),
+            Err(error) => {
+                let message = format!("saved queries not read: {error}");
+                return (Saved::default(), vec![warning(path, message)]);
+            }
+        };
+
+        match crate::saved::parse(&source) {
+            Ok(sections) => crate::saved::restore(sections, config, path),
+            // Not replaced, unlike the history: they were named by hand.
+            Err(message) => {
+                let message =
+                    format!("saved queries ignored; fix the file before saving another: {message}");
+                (Saved::default(), vec![warning(path, message)])
+            }
+        }
+    }
+
+    async fn save_queries(
+        &self,
+        connection: &ConnectionName,
+        queries: &[SavedQuery],
+    ) -> Result<(), StoreError> {
+        let Some(path) = &self.saved else {
+            return Err(StoreError::Unavailable(
+                "neither XDG_STATE_HOME nor HOME is set".to_owned(),
+            ));
+        };
+        let failed =
+            |error: std::io::Error| StoreError::Unavailable(format!("{}: {error}", path.display()));
+        let _one_at_a_time = self.writes.lock().await;
+
+        let source = Self::read(path).await.map_err(failed)?;
+        let mut sections = match source.as_deref().map(crate::saved::parse) {
+            Some(Ok(sections)) => sections,
+            None => crate::saved::Sections::default(),
+            Some(Err(message)) => {
+                return Err(StoreError::Unavailable(format!(
+                    "{}: not overwritten, it does not parse: {message}",
+                    path.display()
+                )));
+            }
+        };
+        sections.insert(
+            connection.as_str().to_owned(),
+            queries.iter().map(crate::saved::Wire::of).collect(),
+        );
+
+        write(path, &crate::saved::render(&sections))
+            .await
+            .map_err(failed)
+    }
 }
 
 /// A connection since removed from the config is taken for the default.
-fn engine_of(config: &Config, name: &ConnectionName) -> Engine {
+pub(crate) fn engine_of(config: &Config, name: &ConnectionName) -> Engine {
     config
         .connections
         .iter()
@@ -282,7 +355,10 @@ async fn write(path: &Path, contents: &str) -> Result<(), std::io::Error> {
         directory.create(parent).await?;
     }
 
-    let temporary = path.with_file_name(format!(".history.{}.tmp", std::process::id()));
+    let stem = path
+        .file_stem()
+        .map_or_else(Default::default, |stem| stem.to_string_lossy());
+    let temporary = path.with_file_name(format!(".{stem}.{}.tmp", std::process::id()));
     let mut options = tokio::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]

@@ -2,6 +2,8 @@
 //! along the bottom border. Unlike the other pickers it scrolls: the history
 //! can outgrow any frame.
 
+use std::ops::Range;
+
 use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::Style;
@@ -21,6 +23,7 @@ const PAD: u16 = 1;
 /// Two borders and the query line.
 const CHROME: u16 = 3;
 const PLACE_WIDTH: usize = 16;
+const NAME_WIDTH: usize = 24;
 const PROMPT: &str = "❯ ";
 const ELLIPSIS: char = '…';
 
@@ -124,10 +127,23 @@ pub(crate) fn render(frame: &mut Frame, view: &HistoryView, theme: Theme) {
         .max()
         .unwrap_or(0)
         .min(PLACE_WIDTH);
+    let name_width = view
+        .rows
+        .iter()
+        .map(|row| row.name.width())
+        .max()
+        .unwrap_or(0)
+        .min(NAME_WIDTH);
+    let widths = Widths {
+        age: age_width,
+        place: place_width,
+        name: name_width,
+        row: usize::from(list.width),
+    };
     let items: Vec<ListItem> = view
         .rows
         .iter()
-        .map(|row| item(row, age_width, place_width, usize::from(list.width), theme))
+        .map(|row| item(row, widths, theme))
         .collect();
     let mut state = ListState::default().with_selected(Some(view.selected));
 
@@ -164,39 +180,60 @@ fn render_query(frame: &mut Frame, area: Rect, view: &HistoryView, theme: Theme)
     frame.set_cursor_position(((area.x + caret).min(area.right().saturating_sub(1)), area.y));
 }
 
-fn item(
-    row: &HistoryRow,
-    age_width: usize,
-    place_width: usize,
-    width: usize,
-    theme: Theme,
-) -> ListItem<'static> {
+/// Each column's, widest row's; zero leaves the column out.
+#[derive(Clone, Copy)]
+struct Widths {
+    age: usize,
+    place: usize,
+    name: usize,
+    row: usize,
+}
+
+/// `kept` bytes of `ranges`, which index the uncut text.
+fn within(ranges: &[Range<usize>], kept: usize) -> Vec<Range<usize>> {
+    ranges
+        .iter()
+        .filter(|range| range.start < kept)
+        .map(|range| range.start..range.end.min(kept))
+        .collect()
+}
+
+fn item(row: &HistoryRow, widths: Widths, theme: Theme) -> ListItem<'static> {
     let faint = theme.style(Token::Faint);
     let mut spans = Vec::new();
     let mut used = 0;
 
-    if age_width > 0 {
-        spans.push(Span::styled(format!("{:>age_width$}  ", row.age), faint));
-        used += age_width + 2;
-    }
-    if place_width > 0 {
+    if widths.age > 0 {
         spans.push(Span::styled(
-            format!("{}  ", padded(&row.place, place_width)),
+            format!("{:>1$}  ", row.age, widths.age),
             faint,
         ));
-        used += place_width + 2;
+        used += widths.age + 2;
+    }
+    if widths.place > 0 {
+        spans.push(Span::styled(
+            format!("{}  ", padded(&row.place, widths.place)),
+            faint,
+        ));
+        used += widths.place + 2;
+    }
+    if widths.name > 0 {
+        let (name, kept) = clipped(&row.name, widths.name);
+        let fill = widths.name.saturating_sub(name.width()) + 2;
+        spans.extend(crate::highlight::ranged(
+            &name,
+            &within(&row.name_matched, kept),
+            theme.style(Token::Section),
+            theme,
+        ));
+        spans.push(Span::raw(" ".repeat(fill)));
+        used += widths.name + 2;
     }
 
-    let (statement, kept) = clipped(&row.statement, width.saturating_sub(used));
-    let matched: Vec<_> = row
-        .matched
-        .iter()
-        .filter(|range| range.start < kept)
-        .map(|range| range.start..range.end.min(kept))
-        .collect();
+    let (statement, kept) = clipped(&row.statement, widths.row.saturating_sub(used));
     spans.extend(crate::highlight::ranged(
         &statement,
-        &matched,
+        &within(&row.matched, kept),
         Style::default(),
         theme,
     ));
@@ -209,7 +246,7 @@ fn layers(view: &HistoryView, theme: Theme) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
 
     for (layer, name) in Layer::ALL.into_iter().zip(&view.layers) {
-        if layer != Layer::Connection {
+        if layer != Layer::Default {
             spans.push(Span::styled(" · ", theme.style(Token::Faint)));
         }
         let style = if layer == view.layer {
@@ -238,8 +275,14 @@ mod tests {
             total: rows.len(),
             rows,
             selected,
-            layer: Layer::Connection,
-            layers: ["prod".to_owned(), "PostgreSQL".to_owned(), "all".to_owned()],
+            layer: Layer::Default,
+            layers: [
+                "default".to_owned(),
+                "saved".to_owned(),
+                "prod".to_owned(),
+                "PostgreSQL".to_owned(),
+                "all".to_owned(),
+            ],
             query: String::new(),
             caret: 0,
         }
@@ -249,6 +292,8 @@ mod tests {
         HistoryRow {
             age: "3h".to_owned(),
             place: String::new(),
+            name: String::new(),
+            name_matched: Vec::new(),
             statement: statement.to_owned(),
             matched: Vec::new(),
         }
@@ -310,7 +355,34 @@ mod tests {
     fn the_bottom_border_names_every_layer() {
         let frame = drawn(80, 24, &view(numbered(1), 0));
 
-        assert!(frame.contains("prod · PostgreSQL · all"), "{frame}");
+        assert!(
+            frame.contains("default · saved · prod · PostgreSQL · all"),
+            "{frame}"
+        );
+    }
+
+    #[test]
+    fn a_saved_query_is_named_in_its_own_column() {
+        let mut rows = numbered(2);
+        rows[0].name = "pending".to_owned();
+
+        let frame = drawn(80, 24, &view(rows, 0));
+
+        assert!(frame.contains("3h  pending  SELECT 0 FROM t;"), "{frame}");
+        assert!(frame.contains("3h           SELECT 1 FROM t;"), "{frame}");
+    }
+
+    #[test]
+    fn a_long_name_is_cut_with_an_ellipsis() {
+        let mut rows = numbered(1);
+        rows[0].name = "n".repeat(NAME_WIDTH + 10);
+
+        let frame = drawn(80, 24, &view(rows, 0));
+
+        assert!(
+            frame.contains(&format!("{}…  SELECT 0", "n".repeat(NAME_WIDTH - 1))),
+            "{frame}"
+        );
     }
 
     #[test]

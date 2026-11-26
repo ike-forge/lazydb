@@ -24,6 +24,7 @@ use super::insert::open_insert;
 use super::inspect::{edit_from_grid, inspect_key, open_inspector};
 use super::palette::{open_palette, palette_key};
 use super::refresh::refresh;
+use super::saved::{open_save, save_key, saves_here};
 use super::search::{next_match_key, open_prompt, restore_origin, search_key};
 use super::themes::{open_themes, preview_theme, themes_key};
 use super::yank::{yank, yank_inserts};
@@ -104,6 +105,7 @@ pub(super) fn overlay_key(state: &mut State, key: Key) -> Option<Vec<Effect>> {
         Some(Overlay::Themes { .. }) => themes_key(state, key),
         Some(Overlay::Connections { .. }) => connections_key(state, key),
         Some(Overlay::History(_)) => history_key(state, key),
+        Some(Overlay::Save(_)) => save_key(state, key),
         Some(Overlay::Search(_)) => search_key(state, key),
         Some(Overlay::Export(_)) => export_key(state, key),
         Some(Overlay::Filter(_)) => {
@@ -184,6 +186,7 @@ pub(super) fn takes_text(state: &State) -> bool {
             Overlay::Search(_) | Overlay::Export(_) | Overlay::Filter(_) | Overlay::History(_),
         ) => true,
         Some(Overlay::Drop(prompt)) => prompt.takes_text(),
+        Some(Overlay::Save(form)) => form.taken().is_none(),
         Some(Overlay::Commands(panel)) => panel.sift().is_some(),
         Some(Overlay::Themes { sift, .. } | Overlay::Connections { sift, .. }) => sift.is_some(),
         Some(Overlay::Inspect(inspector)) => {
@@ -236,6 +239,7 @@ pub(super) fn goto(state: &mut State, edge: Edge) {
             | Overlay::Failed(_)
             | Overlay::Search(_)
             | Overlay::History(_)
+            | Overlay::Save(_)
             | Overlay::Export(_)
             | Overlay::Filter(_)
             | Overlay::Drop(_)
@@ -388,6 +392,7 @@ pub(super) fn dismiss_overlay(state: &mut State) -> bool {
             Overlay::Message(_)
             | Overlay::Commands(_)
             | Overlay::History(_)
+            | Overlay::Save(_)
             | Overlay::Diagnostics(_)
             | Overlay::Inspect(_)
             | Overlay::Export(_)
@@ -473,6 +478,7 @@ pub(super) fn ctrl_key(state: &mut State, key: Key) -> Vec<Effect> {
             Overlay::Commands(_)
                 | Overlay::Themes { .. }
                 | Overlay::Connections { .. }
+                | Overlay::Save(_)
                 | Overlay::Diagnostics(_)
                 | Overlay::Inspect(_)
                 | Overlay::Export(_)
@@ -499,6 +505,11 @@ pub(super) fn ctrl_key(state: &mut State, key: Key) -> Vec<Effect> {
         Key::Char('e') => ctrl_e(state),
         Key::Char('r') => {
             open_history(state);
+            Vec::new()
+        }
+        // In the buffer, where a commit has no rows to write.
+        Key::Char('s') if saves_here(state) => {
+            open_save(state);
             Vec::new()
         }
         Key::Char('s') => open_commit(state),
@@ -612,6 +623,7 @@ pub(super) fn page(state: &mut State, key: Key) -> Vec<Effect> {
         Some(
             Overlay::Failed(_)
             | Overlay::Search(_)
+            | Overlay::Save(_)
             | Overlay::Export(_)
             | Overlay::Filter(_)
             | Overlay::Drop(_)

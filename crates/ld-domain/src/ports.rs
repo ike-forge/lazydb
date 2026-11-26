@@ -14,6 +14,7 @@ use crate::connection::Transaction;
 use crate::history::{Entry, Histories};
 use crate::model::{Catalog, ConnId, DbError, Page, PagingState, Statement};
 use crate::posture::Posture;
+use crate::saved::{Saved, SavedQuery};
 use crate::theme::ThemeChoice;
 
 /// Driver types stop at the adapter.
@@ -68,6 +69,16 @@ pub trait Store: Send + Sync {
     async fn load(&self, config: &Config) -> (Histories, Vec<Diagnostic>);
 
     async fn save(&self, connection: &ConnectionName, entries: &[Entry]) -> Result<(), StoreError>;
+
+    /// Never fails, as [`Store::load`]. Unbounded: the history limit is not
+    /// theirs.
+    async fn load_saved(&self, config: &Config) -> (Saved, Vec<Diagnostic>);
+
+    async fn save_queries(
+        &self,
+        connection: &ConnectionName,
+        queries: &[SavedQuery],
+    ) -> Result<(), StoreError>;
 }
 
 /// Refusing to overwrite is this port's job: a separate `exists` call would

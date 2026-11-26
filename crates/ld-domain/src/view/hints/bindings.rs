@@ -91,6 +91,17 @@ pub(super) const HISTORY: &[Binding] = &[Binding::new(&[ctrl('r')], "layer")];
 /// `q`: it is a letter of the query.
 pub(super) const HISTORY_GLOBAL: &[Binding] = &[Binding::new(&[ENTER], "append"), CLOSE];
 
+/// `⏎` is greyed while the name is blank.
+pub(super) const SAVE: &[Binding] = &[Binding::new(&[ENTER], "save"), CANCEL];
+/// No `q`: `save_key` claims it.
+pub(super) const SAVE_OVERWRITE: &[Binding] = &[
+    Binding::new(&[key('y')], "overwrite"),
+    Binding::new(&[key('n')], "rename"),
+    CANCEL,
+];
+/// Left off where no connection is open.
+pub(super) const SAVE_HINT: Binding = Binding::new(&[ctrl('s')], "save");
+
 /// Two sets: the spellings answer different keys. No `q`: `drop_key` claims it.
 pub(super) const DROP_YES_NO: &[Binding] = &[Binding::new(&[key('y')], "drop it"), NO];
 pub(super) const DELETE_YES_NO: &[Binding] = &[Binding::new(&[key('y')], "delete them"), NO];

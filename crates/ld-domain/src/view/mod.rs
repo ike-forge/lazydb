@@ -104,6 +104,7 @@ pub enum OverlayView {
     /// Only the rows the query left; `total` is the layer's size before it, so
     /// typing does not resize the block.
     History(HistoryView),
+    Save(Box<SaveView>),
     Diagnostics {
         rows: Vec<DiagnosticRow>,
         selected: usize,
@@ -174,6 +175,31 @@ pub struct ExportView {
     pub rows_cursor: usize,
     pub stop: Stop,
     pub confirm: Option<Confirm>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveView {
+    pub connection: String,
+    pub name: String,
+    /// In characters.
+    pub caret: usize,
+    /// Pre-split into lines, as [`DropView::sql`].
+    pub sql: Vec<String>,
+    /// `false` greys `⏎`.
+    pub valid: bool,
+    /// The taken name while the overwrite question is up.
+    pub taken: Option<String>,
+}
+
+fn save_view(form: &crate::saved::SaveForm) -> OverlayView {
+    OverlayView::Save(Box::new(SaveView {
+        connection: form.connection().as_str().to_owned(),
+        name: form.name().text().to_owned(),
+        caret: form.name().cursor(),
+        sql: form.statement().lines().map(str::to_owned).collect(),
+        valid: form.valid_name().is_some(),
+        taken: form.taken().map(|name| name.as_str().to_owned()),
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,9 +325,9 @@ pub struct HistoryView {
     pub selected: usize,
     pub total: usize,
     pub layer: Layer,
-    /// Each of [`Layer::ALL`] as this session names it: the connection, the
-    /// engine, `all`.
-    pub layers: [String; 3],
+    /// Each of [`Layer::ALL`] as this session names it: `default`, `saved`,
+    /// the connection, the engine, `all`.
+    pub layers: [String; 5],
     pub query: String,
     /// In characters.
     pub caret: usize,
@@ -314,6 +340,10 @@ pub struct HistoryRow {
     /// The connection in the wider layers; the database, if any, in the
     /// connection's own.
     pub place: String,
+    /// Empty for a history entry.
+    pub name: String,
+    /// The query's hits in `name`, as byte ranges.
+    pub name_matched: Vec<Range<usize>>,
     pub statement: String,
     /// The query's hits in `statement`, as byte ranges.
     pub matched: Vec<Range<usize>>,
@@ -330,9 +360,19 @@ fn history_view(state: &State, picker: &Picker) -> OverlayView {
                 .map(|at| at.age(state.now))
                 .unwrap_or_default(),
             place: match picker.layer {
-                Layer::Connection => ranked.recalled.entry.database.clone().unwrap_or_default(),
-                Layer::Engine | Layer::All => ranked.recalled.connection.as_str().to_owned(),
+                Layer::Default | Layer::Connection => {
+                    ranked.recalled.entry.database.clone().unwrap_or_default()
+                }
+                Layer::Saved | Layer::Engine | Layer::All => {
+                    ranked.recalled.connection.as_str().to_owned()
+                }
             },
+            name: ranked
+                .recalled
+                .name
+                .map(|name| name.as_str().to_owned())
+                .unwrap_or_default(),
+            name_matched: ranked.name_ranges,
             statement: ranked.label,
             matched: ranked.ranges,
         })
@@ -351,6 +391,8 @@ fn history_view(state: &State, picker: &Picker) -> OverlayView {
         total: crate::update::listed(state, picker.layer, "").len(),
         layer: picker.layer,
         layers: [
+            "default".to_owned(),
+            "saved".to_owned(),
             connection,
             state.queries.engine().label().to_owned(),
             "all".to_owned(),
@@ -392,6 +434,7 @@ fn overlay(state: &State) -> Option<OverlayView> {
             })
         }
         Overlay::History(picker) => Some(history_view(state, picker)),
+        Overlay::Save(form) => Some(save_view(form)),
         Overlay::Connections { cursor, sift } => {
             let names = crate::update::connection_names(&state.config);
             let search = sift.as_ref().and_then(Sift::search);

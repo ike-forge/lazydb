@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::clock::Stamp;
-use crate::config::{Config, ConnectionConfig};
+use crate::config::{Config, ConnectionConfig, ConnectionName};
 use crate::connection::{Connection, ConnectionState, SchemaState};
 use crate::contents::ContentsPanel;
 use crate::ddl::DdlPanel;
@@ -20,6 +20,7 @@ use crate::overlay::Overlay;
 use crate::panel::Panel;
 use crate::posture::Posture;
 use crate::queries::{QueriesPanel, QueriesTab};
+use crate::saved::Saved;
 use crate::search::{Search, Searched};
 use crate::style::Severity;
 use crate::theme::ThemeChoice;
@@ -35,6 +36,7 @@ pub struct State {
     pub queries: QueriesPanel,
     pub log: Log,
     pub histories: Histories,
+    pub saved: Saved,
     /// So a motion knows how far a page is.
     pub geometry: Geometry,
     pub overlay: Option<Overlay>,
@@ -147,12 +149,19 @@ impl State {
 
     #[must_use]
     pub fn history(&self) -> &[crate::history::Entry] {
+        self.connected_name()
+            .map_or(&[], |name| self.histories.of(name))
+    }
+
+    /// What the history and the saved queries are keyed by.
+    #[must_use]
+    pub const fn connected_name(&self) -> Option<&ConnectionName> {
         match &self.connection {
-            ConnectionState::Connected(connection) => self.histories.of(&connection.name),
+            ConnectionState::Connected(connection) => Some(&connection.name),
             ConnectionState::Unchosen
             | ConnectionState::Disconnected
             | ConnectionState::Connecting { .. }
-            | ConnectionState::Failed(_) => &[],
+            | ConnectionState::Failed(_) => None,
         }
     }
 

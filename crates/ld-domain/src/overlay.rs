@@ -8,6 +8,7 @@ use crate::drop::DropPrompt;
 use crate::export::ExportForm;
 use crate::history::Picker;
 use crate::inspect::Inspector;
+use crate::saved::SaveForm;
 use crate::search::{Prompt, Sift};
 use crate::style::Severity;
 use crate::theme::ThemeChoice;
@@ -45,6 +46,7 @@ pub enum Overlay {
     },
     /// Previews nothing; `⏎` copies into the buffer.
     History(Picker),
+    Save(SaveForm),
     Diagnostics(DiagnosticsPanel),
     /// A modal, not a bar prompt like [`Overlay::Search`]: a filter drops rows
     /// and must not read like a search.

@@ -378,6 +378,11 @@ const QUERIES: &[Command] = &[
         Run::In(Panel::Queries),
     ),
     Command::new(
+        &[Stroke::ctrl(Key::Char('s'))],
+        "save the statement",
+        Run::In(Panel::Queries),
+    ),
+    Command::new(
         &[Stroke::ctrl(Key::Char('e'))],
         "open in $EDITOR",
         Run::In(Panel::Queries),

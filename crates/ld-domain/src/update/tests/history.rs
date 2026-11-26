@@ -220,7 +220,7 @@ fn ctrl_r_opens_the_history_on_the_connections_newest_entry() {
 
     open_history(&mut state);
 
-    assert_eq!(picker(&state).layer, Layer::Connection);
+    assert_eq!(picker(&state).layer, Layer::Default);
     assert_eq!(picker(&state).cursor.index(), 0);
     assert_eq!(listed(&state), ["SELECT 2;", "SELECT 1;"]);
 }
@@ -287,6 +287,14 @@ fn ctrl_r_while_open_widens_the_layer_and_wraps() {
     assert_eq!(listed(&state), ["SELECT 'local';"]);
 
     open_history(&mut state);
+    assert_eq!(picker(&state).layer, Layer::Saved);
+    assert!(listed(&state).is_empty());
+
+    open_history(&mut state);
+    assert_eq!(picker(&state).layer, Layer::Connection);
+    assert_eq!(listed(&state), ["SELECT 'local';"]);
+
+    open_history(&mut state);
     assert_eq!(picker(&state).layer, Layer::Engine);
     assert_eq!(listed(&state), ["SELECT 'staging';", "SELECT 'local';"]);
 
@@ -298,7 +306,7 @@ fn ctrl_r_while_open_widens_the_layer_and_wraps() {
     );
 
     open_history(&mut state);
-    assert_eq!(picker(&state).layer, Layer::Connection);
+    assert_eq!(picker(&state).layer, Layer::Default);
 }
 
 #[test]
@@ -316,8 +324,14 @@ fn widening_returns_the_cursor_to_the_top() {
 fn a_wider_layer_names_the_connection_each_row_ran_on() {
     let mut state = having_run(&["SELECT 1;"]);
     ran_elsewhere(&mut state, "staging", Engine::Postgres, "SELECT 2;", 0);
-    open_history(&mut state);
-    open_history(&mut state);
+    for _ in [
+        Layer::Default,
+        Layer::Saved,
+        Layer::Connection,
+        Layer::Engine,
+    ] {
+        open_history(&mut state);
+    }
 
     let Some(OverlayView::History(history)) = crate::view::view_model(&state).overlay else {
         panic!("the history is drawn");
@@ -325,8 +339,8 @@ fn a_wider_layer_names_the_connection_each_row_ran_on() {
 
     let places: Vec<&str> = history.rows.iter().map(|row| row.place.as_str()).collect();
     assert_eq!(places, ["local", "staging"]);
-    assert_eq!(history.layers[0], "local");
-    assert_eq!(history.layers[1], "PostgreSQL");
+    assert_eq!(history.layers[2], "local");
+    assert_eq!(history.layers[3], "PostgreSQL");
 }
 
 #[test]
@@ -565,7 +579,7 @@ fn a_zero_limit_records_nothing_and_saves_nothing() {
 }
 
 #[test]
-fn ctrl_r_with_the_history_disabled_toasts_instead_of_opening() {
+fn ctrl_r_with_the_history_disabled_and_nothing_saved_toasts_instead_of_opening() {
     let mut state = disabled();
 
     open_history(&mut state);
@@ -573,7 +587,7 @@ fn ctrl_r_with_the_history_disabled_toasts_instead_of_opening() {
     assert!(state.overlay.is_none());
     assert_eq!(
         state.toast.as_ref().map(crate::feedback::Toast::message),
-        Some("history is disabled")
+        Some("nothing saved, and the history is off")
     );
 }
 

@@ -196,6 +196,7 @@ pub(super) fn fits(overlay: &Overlay, geometry: Geometry, config: &Config) -> bo
         Overlay::Commit(_) => geometry.commit_rows() > 0,
         Overlay::Export(_) => geometry.export_fits(),
         Overlay::Drop(_) => geometry.drop_fits(),
+        Overlay::Save(_) => geometry.save_fits(),
         Overlay::Message(_)
         | Overlay::Search(_)
         | Overlay::Filter(_)

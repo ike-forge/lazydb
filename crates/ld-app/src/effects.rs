@@ -8,6 +8,7 @@ use ld_domain::config::{ConnectionConfig, ConnectionName, DriverConfig};
 use ld_domain::history::Entry;
 use ld_domain::model::{ConnId, DbError, Page, QueryId};
 use ld_domain::ports::{ConfigSink, Database, Store, Writer};
+use ld_domain::saved::SavedQuery;
 use ld_domain::{Effect, Msg};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::AbortHandle;
@@ -126,6 +127,18 @@ pub(crate) fn run(
                 Arc::clone(store),
                 connection.clone(),
                 entries.clone(),
+            ));
+        }
+
+        Effect::SaveQueries {
+            connection,
+            queries,
+        } => {
+            tokio::spawn(save_queries(
+                tx.clone(),
+                Arc::clone(store),
+                connection.clone(),
+                queries.clone(),
             ));
         }
 
@@ -253,11 +266,30 @@ async fn save_history(
     }
 }
 
+/// A trail line, as [`save_history`]; the toast already said it was saved.
+async fn save_queries(
+    tx: UnboundedSender<Incoming>,
+    store: Arc<dyn Store>,
+    connection: ConnectionName,
+    queries: Vec<SavedQuery>,
+) {
+    if let Err(error) = store.save_queries(&connection, &queries).await {
+        // A closed channel means the main loop has ended.
+        let _sent = tx.send(
+            Msg::SavedQueriesFailed {
+                reason: error.to_string(),
+            }
+            .into(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ld_domain::config::{Config, Diagnostic};
     use ld_domain::history::{Entry, Histories};
     use ld_domain::ports::{ConfigSink, ConfigWriteError, StoreError};
+    use ld_domain::saved::{Saved, SavedQuery};
     use ld_domain::theme::{Ours, ThemeChoice};
 
     use super::*;
@@ -336,6 +368,18 @@ mod tests {
         ) -> Result<(), StoreError> {
             self.0.clone()
         }
+
+        async fn load_saved(&self, _config: &Config) -> (Saved, Vec<Diagnostic>) {
+            (Saved::default(), Vec::new())
+        }
+
+        async fn save_queries(
+            &self,
+            _connection: &ConnectionName,
+            _queries: &[SavedQuery],
+        ) -> Result<(), StoreError> {
+            self.0.clone()
+        }
     }
 
     fn name() -> ConnectionName {
@@ -368,5 +412,18 @@ mod tests {
             panic!("a lost save is worth one line");
         };
         assert!(reason.contains("permission denied"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn saved_queries_that_could_not_be_written_report_why() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = StoreError::Unavailable("/home/x/saved.toml: permission denied".to_owned());
+
+        save_queries(tx, Arc::new(Disk(Err(error))), name(), Vec::new()).await;
+
+        let Some(Incoming::Msg(Msg::SavedQueriesFailed { reason })) = rx.recv().await else {
+            panic!("a lost save is worth one line");
+        };
+        assert!(reason.contains("saved.toml"), "{reason}");
     }
 }

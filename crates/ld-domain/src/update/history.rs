@@ -1,8 +1,7 @@
-//! The query history picker: typing filters at once, `ctrl-r` widens the
+//! The query history picker: typing filters at once, `ctrl-r` steps the
 //! layer, `⏎` appends.
 
-use crate::connection::ConnectionState;
-use crate::history::{Layer, Picker, Ranked, ranked};
+use crate::history::{Layer, Picker, Ranked, ranked, recall};
 use crate::model::Key;
 use crate::overlay::Overlay;
 use crate::panel::Panel;
@@ -14,30 +13,23 @@ use super::{Effect, escape};
 
 /// What the picker lists for `layer` and `query`; shared with the view.
 pub(crate) fn listed<'a>(state: &'a State, layer: Layer, query: &str) -> Vec<Ranked<'a>> {
-    let connection = match &state.connection {
-        ConnectionState::Connected(connection) => Some(&connection.name),
-        ConnectionState::Unchosen
-        | ConnectionState::Disconnected
-        | ConnectionState::Connecting { .. }
-        | ConnectionState::Failed(_) => None,
-    };
-
     ranked(
-        state
-            .histories
-            .recall(layer, connection, state.queries.engine()),
+        recall(
+            &state.histories,
+            &state.saved,
+            layer,
+            state.connected_name(),
+            state.queries.engine(),
+        ),
         query,
     )
 }
 
 /// Refused with nothing to list, so the bar greys it instead. Opens on the
-/// narrowest layer with anything in it.
+/// first layer with anything in it. Open with the history off: saved queries
+/// are not history.
 pub(super) fn open_history(state: &mut State) {
     if state.focus() != Panel::Queries || matches!(state.overlay, Some(Overlay::Search(_))) {
-        return;
-    }
-    if state.config.history.limit.is_off() {
-        state.notify(Severity::Info, "history is disabled");
         return;
     }
     if state.geometry.history_rows() == 0 {
@@ -48,7 +40,12 @@ pub(super) fn open_history(state: &mut State) {
         .into_iter()
         .find(|layer| !listed(state, *layer, "").is_empty())
     else {
-        state.notify(Severity::Info, "nothing in the history yet");
+        let empty = if state.config.history.limit.is_off() {
+            "nothing saved, and the history is off"
+        } else {
+            "nothing in the history yet"
+        };
+        state.notify(Severity::Info, empty);
         return;
     };
 
@@ -58,7 +55,7 @@ pub(super) fn open_history(state: &mut State) {
     }));
 }
 
-/// `ctrl-r` while open: wraps back to the narrowest layer.
+/// `ctrl-r` while open: wraps back to the first layer.
 pub(super) fn widen(state: &mut State) {
     if let Some(Overlay::History(picker)) = &mut state.overlay {
         picker.layer = picker.layer.next();

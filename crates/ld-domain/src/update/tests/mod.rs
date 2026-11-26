@@ -56,6 +56,7 @@ mod queries;
 mod reads;
 mod refresh;
 mod run;
+mod saved;
 mod search;
 mod selection;
 mod themes;
@@ -158,6 +159,7 @@ fn palette(state: &State) -> Option<&CommandsPanel> {
         | Overlay::Themes { .. }
         | Overlay::Connections { .. }
         | Overlay::History { .. }
+        | Overlay::Save(_)
         | Overlay::Diagnostics(_)
         | Overlay::Export(_)
         | Overlay::Filter(_)

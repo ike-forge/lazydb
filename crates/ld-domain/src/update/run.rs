@@ -1,4 +1,4 @@
-use crate::connection::{ConnectionState, Transaction};
+use crate::connection::Transaction;
 use crate::contents::{ContentsState, Continue, Failure, Landed, Subject, TableRef};
 use crate::history::Entry;
 use crate::log::{Outcome, Trace};
@@ -257,19 +257,8 @@ pub(super) fn run(state: &mut State) -> Vec<Effect> {
 /// Only the buffer: reading a table from the tree is not something the user
 /// typed.
 pub(super) fn record_history(state: &mut State, sql: &str) -> Option<Effect> {
-    let ConnectionState::Connected(connection) = &state.connection else {
-        return None;
-    };
-    let name = connection.name.clone();
-    let entry = Entry {
-        statement: sql.to_owned(),
-        at: Some(state.now),
-        engine: state.engine(),
-        database: state
-            .schema()
-            .and_then(|catalog| catalog.server.as_ref())
-            .map(|server| server.current.clone()),
-    };
+    let name = state.connected_name()?.clone();
+    let entry = entry_now(state, sql);
 
     state
         .histories
@@ -278,6 +267,19 @@ pub(super) fn record_history(state: &mut State, sql: &str) -> Option<Effect> {
             entries: state.histories.of(&name).to_vec(),
             connection: name,
         })
+}
+
+/// `sql` as asked now, where it was asked.
+pub(super) fn entry_now(state: &State, sql: &str) -> Entry {
+    Entry {
+        statement: sql.to_owned(),
+        at: Some(state.now),
+        engine: state.engine(),
+        database: state
+            .schema()
+            .and_then(|catalog| catalog.server.as_ref())
+            .map(|server| server.current.clone()),
+    }
 }
 
 /// Focus is left to the callers.

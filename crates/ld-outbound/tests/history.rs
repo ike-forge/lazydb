@@ -7,6 +7,7 @@ use ld_domain::clock::Stamp;
 use ld_domain::config::{Config, ConnectionName, HistoryConfig, HistoryLimit};
 use ld_domain::history::{Entry, Histories};
 use ld_domain::ports::Store;
+use ld_domain::saved::{QueryName, SavedQuery};
 use ld_outbound::history::FileStore;
 
 /// Under the target dir, so runs leave nothing behind and cannot collide.
@@ -218,4 +219,67 @@ async fn the_file_is_private_to_the_user() {
     };
     assert_eq!(mode(&path), 0o600);
     assert_eq!(mode(&directory), 0o700);
+}
+
+#[allow(clippy::expect_used, reason = "see scratch")]
+fn saved(of: &[(&str, &str)]) -> Vec<SavedQuery> {
+    entries(
+        &of.iter()
+            .map(|(_, statement)| *statement)
+            .collect::<Vec<_>>(),
+    )
+    .into_iter()
+    .zip(of)
+    .map(|(entry, (called, _))| SavedQuery {
+        name: QueryName::try_new(called).expect("a valid name"),
+        entry,
+    })
+    .collect()
+}
+
+#[tokio::test]
+async fn saved_queries_live_beside_the_history_and_load_back() {
+    let directory = scratch("saved-roundtrip").join("state");
+    let store = FileStore::at(Some(directory.join("history.toml")));
+    let queries = saved(&[("pending", "SELECT *\nFROM orders;"), ("one", "SELECT 1;")]);
+
+    store
+        .save_queries(&name("dev"), &queries)
+        .await
+        .expect("the first save creates the file");
+    store
+        .save_queries(&name("prod"), &saved(&[("two", "SELECT 2;")]))
+        .await
+        .expect("a second connection joins it");
+
+    let (loaded, diagnostics) = FileStore::at(Some(directory.join("history.toml")))
+        .load_saved(&keeping(0))
+        .await;
+
+    assert!(directory.join("saved.toml").exists());
+    assert!(!directory.join("history.toml").exists());
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(loaded.of(&name("dev")), queries);
+    assert_eq!(loaded.of(&name("prod")).len(), 1);
+}
+
+#[tokio::test]
+async fn a_saved_file_that_does_not_parse_is_reported_and_not_overwritten() {
+    let directory = scratch("saved-broken");
+    let path = directory.join("saved.toml");
+    std::fs::write(&path, "[connections.dev\n").expect("written");
+    let store = FileStore::at(Some(directory.join("history.toml")));
+
+    let (loaded, diagnostics) = store.load_saved(&keeping(100)).await;
+    let saving = store
+        .save_queries(&name("dev"), &saved(&[("one", "SELECT 1;")]))
+        .await;
+
+    assert!(loaded.is_empty());
+    assert_eq!(diagnostics.len(), 1);
+    assert!(saving.is_err());
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("still there"),
+        "[connections.dev\n"
+    );
 }

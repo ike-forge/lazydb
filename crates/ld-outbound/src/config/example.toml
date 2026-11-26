@@ -44,8 +44,11 @@
 
 # ── query history ─────────────────────────────────────────────
 # Kept per connection, between runs, in $XDG_STATE_HOME/lazydb.
-# ctrl-r in Queries opens it, fuzzy-searched as you type; ctrl-r again
-# widens it to every connection on the engine, then to all of them.
+# ctrl-r in Queries opens it with the connection's saved queries
+# (ctrl-s in the editor) on top, fuzzy-searched as you type; ctrl-r again
+# steps to every saved query on the engine, the connection's history,
+# every connection on the engine, then all of them. Saved queries are not
+# history: the limit does not bound them, nor does 0 drop them.
 # [history]
 # limit = 100   # 0..=10000; statements remembered per connection. 0 turns
 #               # the history off: nothing is read, kept or written.

@@ -162,11 +162,14 @@ async fn run(
     let store: Arc<dyn Store> = Arc::new(ld_outbound::history::FileStore::from_env());
     let (histories, history_diagnostics) = store.load(&config).await;
     diagnostics.extend(history_diagnostics);
+    let (saved, saved_diagnostics) = store.load_saved(&config).await;
+    diagnostics.extend(saved_diagnostics);
     let themes = Themes::new(&config.themes, config.background);
 
     let config_home = ld_outbound::config::global_path();
     let (mut state, startup) = ld_domain::init(config, diagnostics, ld_outbound::clock::now());
     state.histories = histories;
+    state.saved = saved;
     state.cwd = std::env::current_dir().unwrap_or_default();
     state.config_home = config_home;
     let mut measured: Option<Geometry> = None;

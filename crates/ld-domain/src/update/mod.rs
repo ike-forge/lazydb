@@ -40,6 +40,7 @@ mod palette;
 mod pointer;
 mod refresh;
 mod run;
+mod saved;
 mod search;
 mod themes;
 mod visual;
@@ -133,6 +134,10 @@ pub enum Msg {
     HistorySaveFailed {
         reason: String,
     },
+    /// As [`Msg::HistorySaveFailed`]: the next save writes the whole list.
+    SavedQueriesFailed {
+        reason: String,
+    },
     /// A running total, not a delta.
     ExportProgress {
         job: JobId,
@@ -181,6 +186,11 @@ pub enum Effect {
     SaveHistory {
         connection: ConnectionName,
         entries: Vec<crate::history::Entry>,
+    },
+    /// The connection's whole list, as [`Effect::SaveHistory`].
+    SaveQueries {
+        connection: ConnectionName,
+        queries: Vec<crate::saved::SavedQuery>,
     },
     /// Run on the main loop rather than as a task: the editor needs the
     /// terminal.
@@ -374,6 +384,16 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
                 Outcome::Failed { detail: reason },
             );
             state.notify(Severity::Warning, "history not saved, see the logs");
+            Vec::new()
+        }
+
+        Msg::SavedQueriesFailed { reason } => {
+            logged(
+                state,
+                sentence("Saving the saved queries"),
+                Outcome::Failed { detail: reason },
+            );
+            state.notify(Severity::Warning, "saved queries not written, see the logs");
             Vec::new()
         }
 

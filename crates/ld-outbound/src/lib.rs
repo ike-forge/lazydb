@@ -12,6 +12,7 @@ pub mod fake;
 pub mod file;
 pub mod history;
 pub mod postgres;
+mod saved;
 pub mod secret;
 mod tls;
 mod value;

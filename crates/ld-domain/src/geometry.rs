@@ -17,6 +17,7 @@ pub struct Geometry {
     export_fits: bool,
     /// Apart from `export_fits`: the blocks are different sizes.
     drop_fits: bool,
+    save_fits: bool,
     /// Gutter included. Terminal size alone, which keeps the measurement loop
     /// open.
     grid_width: usize,
@@ -50,6 +51,7 @@ impl Geometry {
             command_rows,
             export_fits: false,
             drop_fits: false,
+            save_fits: false,
             grid_width: 0,
             theme_rows: 0,
             connection_rows: 0,
@@ -109,6 +111,18 @@ impl Geometry {
     #[must_use]
     pub const fn drop_fits(self) -> bool {
         self.drop_fits
+    }
+
+    #[must_use]
+    pub const fn save_fits(self) -> bool {
+        self.save_fits
+    }
+
+    /// Split from [`Self::new`]: most callers are tests with nothing to say
+    /// here.
+    #[must_use]
+    pub const fn with_save_fits(self, save_fits: bool) -> Self {
+        Self { save_fits, ..self }
     }
 
     /// Zero makes `ctrl-s` inert and closes an open confirmation.

@@ -1,7 +1,9 @@
 //! What each connection has been asked, newest first. Keyed by name, not
-//! [`ConnId`], so a reconnect keeps it. Recalled in three [`Layer`]s.
+//! [`ConnId`], so a reconnect keeps it. Recalled, with the [`Saved`] queries,
+//! in five [`Layer`]s.
 //!
 //! [`ConnId`]: crate::model::ConnId
+//! [`Saved`]: crate::saved::Saved
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -11,6 +13,7 @@ use crate::config::{ConnectionName, HistoryLimit};
 use crate::engine::Engine;
 use crate::fuzzy::Fuzzy;
 use crate::line::Line;
+use crate::saved::{QueryName, Saved};
 use crate::sql::fold;
 use crate::viewport::Cursor;
 
@@ -76,11 +79,15 @@ impl History {
     }
 }
 
-/// How far back the picker looks, narrowest first.
+/// What the picker lists, in `ctrl-r` order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Layer {
-    /// The connected entry's own.
+    /// The connected entry's saved queries, then its history.
     #[default]
+    Default,
+    /// Saved on any connection on the connected entry's engine.
+    Saved,
+    /// The connected entry's history.
     Connection,
     /// Every connection on the connected entry's engine: the statement run on
     /// staging, recalled on production.
@@ -89,24 +96,89 @@ pub enum Layer {
 }
 
 impl Layer {
-    pub const ALL: [Self; 3] = [Self::Connection, Self::Engine, Self::All];
+    pub const ALL: [Self; 5] = [
+        Self::Default,
+        Self::Saved,
+        Self::Connection,
+        Self::Engine,
+        Self::All,
+    ];
 
     /// Wraps, as atuin's `ctrl-r` does.
     #[must_use]
     pub const fn next(self) -> Self {
         match self {
+            Self::Default => Self::Saved,
+            Self::Saved => Self::Connection,
             Self::Connection => Self::Engine,
             Self::Engine => Self::All,
-            Self::All => Self::Connection,
+            Self::All => Self::Default,
         }
     }
 }
 
-/// An entry and the connection that ran it.
+/// An entry and the connection that ran or saved it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Recalled<'a> {
     pub connection: &'a ConnectionName,
     pub entry: &'a Entry,
+    /// `Some` for a saved query.
+    pub name: Option<&'a QueryName>,
+}
+
+/// Saved queries first in the layers that hold both; a history entry whose
+/// statement is saved on the connection is listed once, as the saved query.
+#[must_use]
+pub fn recall<'a>(
+    histories: &'a Histories,
+    saved: &'a Saved,
+    layer: Layer,
+    connection: Option<&ConnectionName>,
+    engine: Engine,
+) -> Vec<Recalled<'a>> {
+    match layer {
+        Layer::Default => {
+            let Some(connection) = connection else {
+                return Vec::new();
+            };
+            let own: Vec<Recalled<'a>> = saved
+                .iter()
+                .filter(|(name, _)| *name == connection)
+                .map(|(connection, query)| Recalled {
+                    connection,
+                    entry: &query.entry,
+                    name: Some(&query.name),
+                })
+                .collect();
+            let kept: BTreeSet<String> = own
+                .iter()
+                .map(|recalled| folded(&recalled.entry.statement))
+                .collect();
+            let ran = histories
+                .recall(Layer::Connection, Some(connection), engine)
+                .into_iter()
+                .filter(|recalled| !kept.contains(&folded(&recalled.entry.statement)));
+
+            own.into_iter().chain(ran).collect()
+        }
+        Layer::Saved => {
+            let mut recalled: Vec<Recalled<'a>> = saved
+                .iter()
+                .filter(|(_, query)| query.entry.engine == engine)
+                .map(|(connection, query)| Recalled {
+                    connection,
+                    entry: &query.entry,
+                    name: Some(&query.name),
+                })
+                .collect();
+            // Stable, so equal times keep connection order, then the file's.
+            recalled.sort_by_key(|recalled| std::cmp::Reverse(recalled.entry.at));
+            recalled
+        }
+        Layer::Connection | Layer::Engine | Layer::All => {
+            histories.recall(layer, connection, engine)
+        }
+    }
 }
 
 /// Ordered, for determinism.
@@ -155,7 +227,8 @@ impl Histories {
 
     /// Newest first, each statement once: a statement asked on several
     /// connections, or several times, is its newest run. An entry without a
-    /// time sorts after every entry with one.
+    /// time sorts after every entry with one. The history alone: [`recall`]
+    /// adds the saved queries.
     #[must_use]
     pub fn recall(
         &self,
@@ -166,11 +239,16 @@ impl Histories {
         let mut recalled: Vec<Recalled<'_>> = self
             .0
             .iter()
-            .filter(|(name, _)| layer != Layer::Connection || Some(*name) == connection)
+            .filter(|(name, _)| match layer {
+                Layer::Default | Layer::Connection => Some(*name) == connection,
+                Layer::Saved => false,
+                Layer::Engine | Layer::All => true,
+            })
             .flat_map(|(name, history)| {
                 history.entries.iter().map(move |entry| Recalled {
                     connection: name,
                     entry,
+                    name: None,
                 })
             })
             .filter(|recalled| layer != Layer::Engine || recalled.entry.engine == engine)
@@ -195,50 +273,59 @@ pub struct Picker {
 }
 
 /// A recalled entry as the picker lists it: `ranges` are the query's hits in
-/// `label`.
+/// `label`, `name_ranges` in the saved name. One or the other: a name hit is
+/// not searched for in the statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ranked<'a> {
     pub recalled: Recalled<'a>,
     pub label: String,
     pub ranges: Vec<Range<usize>>,
+    pub name_ranges: Vec<Range<usize>>,
 }
 
-/// Best hit first, newest first among equals; in recall order without a
-/// query.
+/// Which of a row's fields the query hit. Scores of a short name and a long
+/// statement do not compare, so every name hit outranks every statement hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Tier {
+    Name,
+    Statement,
+}
+
+/// Name hits first, then statement hits, a saved query's ranking as a history
+/// entry's; best first within each, recall order among equals. In recall order
+/// without a query.
 #[must_use]
 pub fn ranked<'a>(recalled: Vec<Recalled<'a>>, query: &str) -> Vec<Ranked<'a>> {
-    let labelled = recalled.into_iter().map(|recalled| {
-        let label = one_line(&recalled.entry.statement);
-        (recalled, label)
+    let labelled = recalled.into_iter().map(|recalled| Ranked {
+        label: one_line(&recalled.entry.statement),
+        recalled,
+        ranges: Vec::new(),
+        name_ranges: Vec::new(),
     });
 
     let Some(fuzzy) = Fuzzy::new(query) else {
-        return labelled
-            .map(|(recalled, label)| Ranked {
-                recalled,
-                label,
-                ranges: Vec::new(),
-            })
-            .collect();
+        return labelled.collect();
     };
 
-    let mut hits: Vec<(i64, Ranked<'a>)> = labelled
-        .filter_map(|(recalled, label)| {
-            let hit = fuzzy.find(&label)?;
-            Some((
-                hit.score,
-                Ranked {
-                    recalled,
-                    label,
-                    ranges: hit.ranges,
-                },
-            ))
+    let mut hits: Vec<(Tier, i64, Ranked<'a>)> = labelled
+        .filter_map(|mut ranked| {
+            if let Some(hit) = ranked
+                .recalled
+                .name
+                .and_then(|name| fuzzy.find(name.as_str()))
+            {
+                ranked.name_ranges = hit.ranges;
+                return Some((Tier::Name, hit.score, ranked));
+            }
+            let hit = fuzzy.find(&ranked.label)?;
+            ranked.ranges = hit.ranges;
+            Some((Tier::Statement, hit.score, ranked))
         })
         .collect();
 
-    // Stable: equal scores keep recall order, which is newest first.
-    hits.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-    hits.into_iter().map(|(_, ranked)| ranked).collect()
+    // Stable: equal scores keep recall order.
+    hits.sort_by_key(|(tier, score, _)| (*tier, std::cmp::Reverse(*score)));
+    hits.into_iter().map(|(_, _, ranked)| ranked).collect()
 }
 
 /// One row per statement.
@@ -260,6 +347,7 @@ fn same(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::saved::SavedQuery;
 
     fn limit(rows: u32) -> HistoryLimit {
         HistoryLimit::try_new(rows).expect("in range")
@@ -613,10 +701,217 @@ mod tests {
     }
 
     #[test]
-    fn layers_cycle_back_to_the_narrowest() {
+    fn layers_cycle_back_to_the_first() {
         assert_eq!(
             Layer::ALL.map(Layer::next),
-            [Layer::Engine, Layer::All, Layer::Connection]
+            [
+                Layer::Saved,
+                Layer::Connection,
+                Layer::Engine,
+                Layer::All,
+                Layer::Default
+            ]
         );
+    }
+
+    fn saved(queries: &[(&str, Engine, &str, &str, u64)]) -> Saved {
+        let mut saved = Saved::default();
+
+        for (connection, engine, called, statement, seconds) in queries {
+            saved.save(
+                &name(connection),
+                SavedQuery {
+                    name: QueryName::try_new(called).expect("a valid name"),
+                    entry: on(*engine, statement, *seconds),
+                },
+            );
+        }
+
+        saved
+    }
+
+    /// `name: statement`, or the statement alone for a history entry.
+    fn rows(recalled: &[Recalled<'_>]) -> Vec<String> {
+        recalled
+            .iter()
+            .map(|recalled| match recalled.name {
+                Some(called) => format!("{}: {}", called.as_str(), recalled.entry.statement),
+                None => recalled.entry.statement.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_default_layer_is_the_connections_saved_queries_then_its_history() {
+        let histories = layered();
+        let saved = saved(&[
+            ("staging", Engine::Postgres, "old", "SELECT 'old';", 1),
+            ("prod", Engine::Postgres, "elsewhere", "SELECT 'prod';", 2),
+            ("staging", Engine::Postgres, "new", "SELECT 'new';", 3),
+        ]);
+
+        assert_eq!(
+            rows(&recall(
+                &histories,
+                &saved,
+                Layer::Default,
+                Some(&name("staging")),
+                Engine::Postgres
+            )),
+            [
+                "new: SELECT 'new';",
+                "old: SELECT 'old';",
+                "SELECT 4;",
+                "SELECT 1;"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_saved_statement_is_not_listed_again_as_history() {
+        let histories = layered();
+        let saved = saved(&[("staging", Engine::Postgres, "four", "select 4;", 1)]);
+
+        assert_eq!(
+            rows(&recall(
+                &histories,
+                &saved,
+                Layer::Default,
+                Some(&name("staging")),
+                Engine::Postgres
+            )),
+            ["four: select 4;", "SELECT 1;"]
+        );
+    }
+
+    #[test]
+    fn the_saved_layer_spans_the_engines_connections_newest_first() {
+        let saved = saved(&[
+            ("staging", Engine::Postgres, "a", "SELECT 1;", 1),
+            ("events", Engine::Cassandra, "b", "SELECT 2;", 2),
+            ("prod", Engine::Postgres, "a", "SELECT 3;", 3),
+        ]);
+
+        let histories = layered();
+        let recalled = recall(
+            &histories,
+            &saved,
+            Layer::Saved,
+            Some(&name("staging")),
+            Engine::Postgres,
+        );
+
+        assert_eq!(rows(&recalled), ["a: SELECT 3;", "a: SELECT 1;"]);
+        assert_eq!(recalled[0].connection.as_str(), "prod");
+    }
+
+    #[test]
+    fn the_history_layers_hold_no_saved_query() {
+        let saved = saved(&[("staging", Engine::Postgres, "a", "SELECT 'saved';", 99)]);
+
+        let histories = layered();
+        for layer in [Layer::Connection, Layer::Engine, Layer::All] {
+            let recalled = recall(
+                &histories,
+                &saved,
+                layer,
+                Some(&name("staging")),
+                Engine::Postgres,
+            );
+            assert!(
+                recalled.iter().all(|recalled| recalled.name.is_none()),
+                "{layer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_a_connection_the_default_layer_is_empty() {
+        let saved = saved(&[("staging", Engine::Postgres, "a", "SELECT 1;", 1)]);
+
+        assert!(recall(&layered(), &saved, Layer::Default, None, Engine::Postgres).is_empty());
+    }
+
+    fn ranked_rows(saved: &Saved, histories: &Histories, query: &str) -> Vec<String> {
+        let recalled = recall(
+            histories,
+            saved,
+            Layer::Default,
+            Some(&name("dev")),
+            Engine::Postgres,
+        );
+
+        ranked(recalled, query)
+            .into_iter()
+            .map(|ranked| match ranked.recalled.name {
+                Some(called) => format!("{}: {}", called.as_str(), ranked.label),
+                None => ranked.label,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_name_hit_outranks_every_statement_hit() {
+        let mut histories = Histories::default();
+        histories.record(&name("dev"), at("SELECT * FROM orders;", 5), limit(10));
+        let saved = saved(&[
+            (
+                "dev",
+                Engine::Postgres,
+                "pending",
+                "SELECT * FROM orders WHERE x;",
+                1,
+            ),
+            ("dev", Engine::Postgres, "big orders", "SELECT 1;", 2),
+        ]);
+
+        assert_eq!(
+            ranked_rows(&saved, &histories, "orders"),
+            [
+                "big orders: SELECT 1;",
+                "pending: SELECT * FROM orders WHERE x;",
+                "SELECT * FROM orders;",
+            ],
+            "an equal statement hit keeps recall order, saved first"
+        );
+    }
+
+    #[test]
+    fn a_saved_statement_hit_ranks_as_a_history_one() {
+        let mut histories = Histories::default();
+        histories.record(
+            &name("dev"),
+            at("SELECT * FROM t WHERE ord = 1;", 5),
+            limit(10),
+        );
+        let saved = saved(&[("dev", Engine::Postgres, "x", "SELECT o, r, d FROM t;", 1)]);
+
+        assert_eq!(
+            ranked_rows(&saved, &histories, "ord"),
+            [
+                "SELECT * FROM t WHERE ord = 1;",
+                "x: SELECT o, r, d FROM t;"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_hit_marks_the_name_not_the_statement() {
+        let saved = saved(&[("dev", Engine::Postgres, "orders", "SELECT orders;", 1)]);
+
+        let histories = Histories::default();
+        let rows = ranked(
+            recall(
+                &histories,
+                &saved,
+                Layer::Default,
+                Some(&name("dev")),
+                Engine::Postgres,
+            ),
+            "orders",
+        );
+
+        assert_eq!(rows[0].name_ranges, vec![0..6]);
+        assert!(rows[0].ranges.is_empty());
     }
 }

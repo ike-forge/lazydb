@@ -12,8 +12,8 @@ use bindings::{
     DIAGNOSTICS_GLOBAL, DISCARD, DONE, DROP, DROP_TYPED, DROP_YES_NO, EDIT, ENTER, EVERY_PAGE,
     EXPORT, EXPORT_COPY, EXPORT_OVERWRITE, EXPORT_ROWS, FIELD, FILTER, FORMAT, HISTORY,
     HISTORY_GLOBAL, HISTORY_HINT, INSERT, INSERT_ROW, INSPECT_GLOBAL, INSPECT_ROW, LEAVE, MODE,
-    MOVE, NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL, PALETTE_GLOBAL, REFRESH, RUN, SEARCH,
-    SEARCH_GLOBAL, SELECT, SORT, STOP, TOGGLE, UNSET,
+    MOVE, NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL, PALETTE_GLOBAL, REFRESH, RUN, SAVE, SAVE_HINT,
+    SAVE_OVERWRITE, SEARCH, SEARCH_GLOBAL, SELECT, SORT, STOP, TOGGLE, UNSET,
 };
 pub(crate) use bindings::{GLOBAL, THEMES, THEMES_GLOBAL};
 
@@ -112,6 +112,8 @@ fn overlay_bar(state: &State) -> Option<HintBar> {
         Overlay::Themes { .. } => fixed(THEMES, THEMES_GLOBAL),
         Overlay::Connections { .. } => connections_bar(state),
         Overlay::History(_) => fixed(HISTORY, HISTORY_GLOBAL),
+        Overlay::Save(form) if form.taken().is_some() => fixed(&[], SAVE_OVERWRITE),
+        Overlay::Save(_) => fixed(&[], SAVE),
         Overlay::Diagnostics(_) => fixed(&[], DIAGNOSTICS_GLOBAL),
         Overlay::Inspect(inspector) => inspect_bar(state, inspector),
         Overlay::Commit(_) => fixed(&[], COMMIT),
@@ -162,10 +164,19 @@ fn panel_bar(state: &State) -> HintBar {
     }
     if state.focus() == Panel::Queries
         && state.queries.tab() == QueriesTab::Sql
-        && !state.histories.is_empty()
+        && (!state.histories.is_empty() || !state.saved.is_empty())
         && state.geometry.history_rows() > 0
     {
         panel.push(rendered(&HISTORY_HINT));
+    }
+    if state.focus() == Panel::Queries
+        && state.queries.tab() == QueriesTab::Sql
+        && state.connected_name().is_some()
+    {
+        panel.push(rendered_live(
+            &SAVE_HINT,
+            state.queries.statement().is_some() && state.geometry.save_fits(),
+        ));
     }
     if !state.in_flight.is_empty() {
         panel.push(rendered(&ABORT));
