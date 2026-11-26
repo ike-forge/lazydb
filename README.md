@@ -17,7 +17,8 @@ the engines' own tools.
   Cassandra's table options and replication.
 - **Write SQL or CQL with context.** The editor speaks the connection's
   language: schema-aware completion, highlighting, formatting, `$EDITOR`,
-  per-connection history and a session log.
+  fuzzy-searched history per connection, per engine or across all, and a
+  session log.
 - **Explore and export.** Paging, local sort and filter, full-value
   inspection, clipboard yanks, CSV/JSON export, rows copied as `INSERT`s.
 - **Control writes.** Read-only by default. Cell edits, inserts and deletes
@@ -131,7 +132,8 @@ The bottom bar shows what the focused panel takes; `?` lists all of it.
 | `p` / `P` | Fetch the next page / every page |
 | `Y` | Copy the selected rows as `INSERT` statements |
 | `Ctrl-e` | Export rows; open `$EDITOR` from the editor |
-| `Ctrl-x` · `Ctrl-f` · `Ctrl-r` | Run the statement · format the buffer · query history |
+| `Ctrl-x` · `Ctrl-f` | Run the statement · format the buffer |
+| `Ctrl-r` | Query history; type to search, `Ctrl-r` again for this engine, then all |
 | `e` · `i` · `d` | Edit a cell · insert a row · delete rows or drop an object |
 | `x` | In the inspector: stage `NULL` |
 | `/` · `m` · `v` · `y` | In the inspector: the same, over its name / value table |

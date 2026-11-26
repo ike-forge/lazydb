@@ -84,7 +84,7 @@ every word of every statement, so a data-modifying `WITH` or
 | `Database` | connect, describe, transaction state, execute, execute paged |
 | `ConfigSource` / `ConfigSink` | layered config; theme write-back |
 | `SecretResolver` | literal / env / file; `~/.pgpass` and `cqlshrc` in their adapters |
-| `Store` | query history |
+| `Store` | query history: statement, time, engine, database per entry |
 | `Writer` | export sinks |
 
 `ld_outbound::engines::Engines` implements `Database` over both adapters and
@@ -110,9 +110,11 @@ until each is answered:
 | Driver adapter | `ld-outbound/{postgres,cassandra}.rs`, routed in `engines.rs` |
 
 The Queries panel holds its buffer's engine, set when a connection is
-chosen; everything else asks `State::engine()`. History folds as SQL for
-both engines: the store restores entries without one, and the two fold
-names and keywords alike.
+chosen; everything else asks `State::engine()`. Each history entry records
+its engine, so the picker's engine layer spans connections; an entry from a
+file older than that takes its connection's engine from the config. Entries
+fold as SQL for both engines, which fold names and keywords alike, so one
+statement is one row across engines.
 
 ## 7. Paging
 
