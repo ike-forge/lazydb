@@ -132,7 +132,7 @@ fn history_sift_key(state: &mut State, key: Key) -> Vec<Effect> {
     Vec::new()
 }
 
-/// Appends, not runs: `ctrl-r` is the one key that sends.
+/// Appends, not runs: `ctrl-x` is the one key that sends.
 fn append(state: &mut State) {
     let labels = history_labels(state);
     let Some(Overlay::History { cursor, sift }) = &state.overlay else {

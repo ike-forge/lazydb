@@ -44,7 +44,7 @@
 
 # ── query history ─────────────────────────────────────────────
 # Kept per connection, between runs, in $XDG_STATE_HOME/lazydb.
-# ctrl-g in Queries opens it.
+# ctrl-r in Queries opens it.
 # [history]
 # limit = 100   # 0..=10000; statements remembered per connection. 0 turns
 #               # the history off: nothing is read, kept or written.

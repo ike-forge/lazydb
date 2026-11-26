@@ -1,7 +1,7 @@
 use super::*;
 
 fn run_query(state: &mut State) -> Vec<Effect> {
-    ctrl(state, Key::Char('r'))
+    ctrl(state, Key::Char('x'))
 }
 
 #[test]
@@ -435,13 +435,13 @@ fn an_alt_modified_key_is_not_a_binding() {
 }
 
 #[test]
-fn ctrl_alt_r_does_not_run_the_buffer() {
+fn ctrl_alt_x_does_not_run_the_buffer() {
     let mut state = editing("SELECT * FROM shop.orders");
 
     let effects = press_binding(
         &mut state,
         KeyPress {
-            key: Key::Char('r'),
+            key: Key::Char('x'),
             modifiers: Modifiers {
                 ctrl: true,
                 alt: true,

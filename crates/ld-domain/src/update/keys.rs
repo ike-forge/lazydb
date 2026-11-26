@@ -493,7 +493,7 @@ pub(super) fn ctrl_key(state: &mut State, key: Key) -> Vec<Effect> {
     }
 
     match key {
-        Key::Char('r') => run(state),
+        Key::Char('x') => run(state),
         Key::Char('c') => cancel(state),
         Key::Char('t') => {
             open_themes(state);
@@ -504,7 +504,7 @@ pub(super) fn ctrl_key(state: &mut State, key: Key) -> Vec<Effect> {
             Vec::new()
         }
         Key::Char('e') => ctrl_e(state),
-        Key::Char('g') => {
+        Key::Char('r') => {
             open_history(state);
             Vec::new()
         }

@@ -57,7 +57,7 @@ lazydb --connection dev
 
 Without `--connection` or `default_connection`, LazyDB opens the connection
 picker; `Ctrl-o` reopens it to switch. `Enter` unfolds a schema or opens a
-table, `4` opens the editor, `Ctrl-r` runs the statement under the cursor,
+table, `4` opens the editor, `Ctrl-x` runs the statement under the cursor,
 `?` lists every command.
 
 ## Configuration
@@ -131,7 +131,7 @@ The bottom bar shows what the focused panel takes; `?` lists all of it.
 | `p` / `P` | Fetch the next page / every page |
 | `Y` | Copy the selected rows as `INSERT` statements |
 | `Ctrl-e` | Export rows; open `$EDITOR` from the editor |
-| `Ctrl-r` · `Ctrl-f` · `Ctrl-g` | Run the statement · format the buffer · query history |
+| `Ctrl-x` · `Ctrl-f` · `Ctrl-r` | Run the statement · format the buffer · query history |
 | `e` · `i` · `d` | Edit a cell · insert a row · delete rows or drop an object |
 | `x` | In the inspector: stage `NULL` |
 | `/` · `m` · `v` · `y` | In the inspector: the same, over its name / value table |

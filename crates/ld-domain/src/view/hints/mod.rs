@@ -383,7 +383,7 @@ fn pages(binding: &Binding) -> bool {
 }
 
 /// Left off the bar rather than greyed; the palette still names it. Not
-/// `ctrl-r`, which follows the buffer.
+/// `ctrl-x`, which follows the buffer.
 fn refused(state: &State, binding: &Binding) -> bool {
     matches!(*binding, DROP | DELETE | INSERT_ROW) && !state.posture().permits_mutation()
 }

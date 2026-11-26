@@ -17,7 +17,7 @@ const MAX_WIDTH: u16 = 100;
 const PAD: u16 = 1;
 const ELLIPSIS: char = '…';
 
-/// Zero gates `ctrl-g`.
+/// Zero gates `ctrl-r`.
 pub(crate) fn visible_rows(area: Rect) -> usize {
     if area.width < MIN_WIDTH || area.height < 3 {
         return 0;

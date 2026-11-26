@@ -3,7 +3,7 @@ use crate::config::{HistoryConfig, HistoryLimit};
 use crate::view::hints::bar;
 
 fn open_history(state: &mut State) -> Vec<Effect> {
-    ctrl(state, Key::Char('g'))
+    ctrl(state, Key::Char('r'))
 }
 
 fn roomy() -> Geometry {
@@ -26,7 +26,7 @@ fn having_run(statements: &[&str]) -> State {
 }
 
 fn run_query(state: &mut State) -> Vec<Effect> {
-    ctrl(state, Key::Char('r'))
+    ctrl(state, Key::Char('x'))
 }
 
 fn buffer(state: &State) -> String {
@@ -135,7 +135,7 @@ fn a_failed_save_lands_in_the_trail_and_not_in_a_modal() {
 }
 
 #[test]
-fn ctrl_g_opens_the_history_on_the_newest_entry() {
+fn ctrl_r_opens_the_history_on_the_newest_entry() {
     let mut state = having_run(&["SELECT 1;", "SELECT 2;"]);
 
     open_history(&mut state);
@@ -147,7 +147,7 @@ fn ctrl_g_opens_the_history_on_the_newest_entry() {
 }
 
 #[test]
-fn ctrl_g_opens_nothing_with_no_history() {
+fn ctrl_r_opens_nothing_with_no_history() {
     let mut state = having_run(&[]);
 
     open_history(&mut state);
@@ -156,7 +156,7 @@ fn ctrl_g_opens_nothing_with_no_history() {
 }
 
 #[test]
-fn ctrl_g_opens_nothing_where_the_frame_cannot_draw_it() {
+fn ctrl_r_opens_nothing_where_the_frame_cannot_draw_it() {
     let mut state = having_run(&["SELECT 1;"]);
     state.geometry = Geometry::new([8, 14, 20, 1], 37, 14);
 
@@ -166,7 +166,7 @@ fn ctrl_g_opens_nothing_where_the_frame_cannot_draw_it() {
 }
 
 #[test]
-fn ctrl_g_belongs_to_queries() {
+fn ctrl_r_belongs_to_queries() {
     let mut state = having_run(&["SELECT 1;"]);
     state.focus_on(Panel::Objects);
 
@@ -315,7 +315,7 @@ fn esc_in_a_filter_puts_the_cursor_back() {
 }
 
 #[test]
-fn ctrl_g_does_nothing_while_the_history_is_open() {
+fn ctrl_r_does_nothing_while_the_history_is_open() {
     let mut state = having_run(&["SELECT 1;"]);
     open_history(&mut state);
     press(&mut state, Key::Char('j'));
@@ -326,7 +326,7 @@ fn ctrl_g_does_nothing_while_the_history_is_open() {
 }
 
 #[test]
-fn the_bar_names_ctrl_g_only_once_there_is_something_to_open() {
+fn the_bar_names_ctrl_r_only_once_there_is_something_to_open() {
     let empty = having_run(&[]);
     let kept = having_run(&["SELECT 1;"]);
 
@@ -356,7 +356,7 @@ fn a_zero_limit_records_nothing_and_saves_nothing() {
 }
 
 #[test]
-fn ctrl_g_with_the_history_disabled_toasts_instead_of_opening() {
+fn ctrl_r_with_the_history_disabled_toasts_instead_of_opening() {
     let mut state = disabled();
 
     open_history(&mut state);
@@ -382,7 +382,7 @@ fn the_toast_leaves_after_its_ticks() {
 }
 
 #[test]
-fn ctrl_g_outside_queries_toasts_nothing() {
+fn ctrl_r_outside_queries_toasts_nothing() {
     let mut state = disabled();
     state.focus_on(Panel::Objects);
 
@@ -392,7 +392,7 @@ fn ctrl_g_outside_queries_toasts_nothing() {
 }
 
 #[test]
-fn ctrl_g_with_nothing_remembered_toasts_instead_of_opening() {
+fn ctrl_r_with_nothing_remembered_toasts_instead_of_opening() {
     let mut state = State::default();
     state.focus_on(Panel::Queries);
 

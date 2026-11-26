@@ -368,12 +368,12 @@ const QUERIES: &[Command] = &[
         Run::In(Panel::Queries),
     ),
     Command::new(
-        &[Stroke::ctrl(Key::Char('r'))],
+        &[Stroke::ctrl(Key::Char('x'))],
         "run the statement",
         Run::In(Panel::Queries),
     ),
     Command::new(
-        &[Stroke::ctrl(Key::Char('g'))],
+        &[Stroke::ctrl(Key::Char('r'))],
         "open the history",
         Run::In(Panel::Queries),
     ),
@@ -912,12 +912,12 @@ mod tests {
     fn the_palette_names_the_run_binding() {
         assert!(
             rows(None).contains(&CommandRow::Command {
-                keys: "ctrl-r".to_owned(),
+                keys: "ctrl-x".to_owned(),
                 action: "run the statement",
                 liveness: Liveness::Live,
                 refused: None,
             }),
-            "the palette claims to be complete, and ctrl-r is the one binding no key types"
+            "the palette claims to be complete, and ctrl-x is the one binding no key types"
         );
     }
 

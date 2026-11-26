@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(
             panel.statement().as_deref(),
             Some("SELECT 2"),
-            "an edit moves the band, so `ctrl-r` follows the caret"
+            "an edit moves the band, so `ctrl-x` follows the caret"
         );
     }
 

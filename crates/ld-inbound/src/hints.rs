@@ -258,7 +258,7 @@ mod tests {
     fn a_closed_buffer_names_the_way_in_and_out() {
         assert_eq!(
             drawn(Panel::Queries, 80),
-            " ⏎ edit | ctrl-r run | ctrl-e $EDITOR | esc leave"
+            " ⏎ edit | ctrl-x run | ctrl-e $EDITOR | esc leave"
         );
     }
 
@@ -274,7 +274,7 @@ mod tests {
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect::<String>(),
-            " ctrl-r run | ctrl-e $EDITOR | ctrl-f format | ⏎ newline | esc done"
+            " ctrl-x run | ctrl-e $EDITOR | ctrl-f format | ⏎ newline | esc done"
         );
     }
 
@@ -317,7 +317,7 @@ mod tests {
         let of = |liveness| {
             let bar = HintBar {
                 panel: vec![Hint {
-                    keys: "ctrl-r".to_owned(),
+                    keys: "ctrl-x".to_owned(),
                     action: "run",
                     liveness,
                 }],

@@ -476,7 +476,7 @@ fn the_queries_bar_names_the_run_binding() {
 
     assert_eq!(
         panel.first().map(|hint| (hint.keys.as_str(), hint.action)),
-        Some(("ctrl-r", "run")),
+        Some(("ctrl-x", "run")),
         "the panel exists to run queries, so the bar says that first"
     );
 }
@@ -495,7 +495,7 @@ fn the_queries_bar_names_the_editor_binding_after_run() {
             .map(|hint| (hint.keys.as_str(), hint.action))
             .take(2)
             .collect::<Vec<_>>(),
-        [("ctrl-r", "run"), ("ctrl-e", "$EDITOR")],
+        [("ctrl-x", "run"), ("ctrl-e", "$EDITOR")],
         "the panel exists to run queries; editing one is the next thing it does"
     );
 }
@@ -579,7 +579,7 @@ fn the_run_hint_is_inert_while_there_is_nothing_to_run() {
         assert_eq!(
             run_hint(&bar).liveness,
             Liveness::Inert,
-            "ctrl-r on {buffer:?} submits nothing, and a bar that lies is worse than no bar"
+            "ctrl-x on {buffer:?} submits nothing, and a bar that lies is worse than no bar"
         );
     }
 }

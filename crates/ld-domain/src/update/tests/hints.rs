@@ -310,7 +310,7 @@ fn no_key_does_anything_the_palette_does_not_list() {
 fn editor_fixture() -> State {
     let mut editor = editing("SELECT * FROM shop.orders");
     editor.geometry = Geometry::new([8, 14, 20, 1], 37, 14).with_history_rows(10);
-    // `ctrl-g` needs a history to open.
+    // `ctrl-r` needs a history to open.
     editor.histories.record(
         &crate::config::ConnectionName::try_new("local").expect("a valid name"),
         "SELECT 1;",

@@ -97,7 +97,7 @@ fn rerun(state: &mut State) -> Vec<Effect> {
         Rerun::Write => {
             state.notify(
                 Severity::Warning,
-                "not re-run: it writes, ctrl-r runs it from the editor",
+                "not re-run: it writes, ctrl-x runs it from the editor",
             );
             Vec::new()
         }

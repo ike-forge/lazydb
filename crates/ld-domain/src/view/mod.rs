@@ -484,7 +484,7 @@ pub enum PanelBody {
         cursor: Position,
         /// The caret is drawn while editing only.
         mode: SqlMode,
-        /// Drawn in both modes: it says what `ctrl-r` would run.
+        /// Drawn in both modes: it says what `ctrl-x` would run.
         band: Option<Highlight>,
         completion: Option<CompletionView>,
     },

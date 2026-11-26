@@ -82,11 +82,11 @@ pub(super) const CONNECTIONS: &[Binding] = &[SEARCH];
 pub(super) const CONNECTIONS_GLOBAL: &[Binding] = &[Binding::new(&[ENTER], "connect"), CLOSE, QUIT];
 
 /// Last of the panel's hints, so a narrow bar drops it before `run`.
-pub(super) const HISTORY_HINT: Binding = Binding::new(&[ctrl('g')], "history");
+pub(super) const HISTORY_HINT: Binding = Binding::new(&[ctrl('r')], "history");
 
 pub(super) const HISTORY: &[Binding] = &[SEARCH];
 
-/// `⏎` appends and runs nothing, the difference from `ctrl-r` worth saying.
+/// `⏎` appends and runs nothing, the difference from `ctrl-x` worth saying.
 pub(super) const HISTORY_GLOBAL: &[Binding] = &[Binding::new(&[ENTER], "append"), CLOSE, QUIT];
 
 /// Two sets: the spellings answer different keys. No `q`: `drop_key` claims it.
@@ -146,7 +146,7 @@ pub(super) const FILTER: Binding = Binding::new(&[key('f')], "filter");
 /// Clears this column's filter only, unlike `esc clear`.
 pub(super) const CLEAR_FILTER: Binding = Binding::new(&[key('c')], "clear filter");
 
-pub(super) const RUN: Binding = Binding::new(&[ctrl('r')], "run");
+pub(super) const RUN: Binding = Binding::new(&[ctrl('x')], "run");
 /// Never greyed: always true while Queries is focused.
 const EDITOR: Binding = Binding::new(&[ctrl('e')], "$EDITOR");
 pub(super) const FORMAT: Binding = Binding::new(&[ctrl('f')], "format");
