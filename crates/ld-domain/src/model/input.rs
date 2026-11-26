@@ -64,4 +64,16 @@ impl KeyPress {
             },
         }
     }
+
+    /// As [`KeyPress::ctrl`], for alt.
+    #[must_use]
+    pub const fn alt(key: Key) -> Self {
+        Self {
+            key,
+            modifiers: Modifiers {
+                alt: true,
+                ..Modifiers::NONE
+            },
+        }
+    }
 }

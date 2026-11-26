@@ -10,16 +10,18 @@ use bindings::{
     ABORT, CANCEL, CLEAR, CLEAR_FILTER, CLOSE, COMMIT, COMMIT_HINT, COMMIT_ROW, COMPLETE,
     CONNECTIONS, CONNECTIONS_ALONE, CONNECTIONS_GLOBAL, COPY, COPY_LINE, DELETE, DELETE_TYPED,
     DELETE_YES_NO, DIAGNOSTICS_GLOBAL, DISCARD, DONE, DROP, DROP_TYPED, DROP_YES_NO, EDIT, ENTER,
-    EVERY_PAGE, EXPORT, EXPORT_COPY, EXPORT_OVERWRITE, EXPORT_ROWS, FIELD, FILTER, FORMAT, HISTORY,
-    HISTORY_GLOBAL, HISTORY_HINT, INSERT, INSERT_ROW, INSPECT_GLOBAL, INSPECT_ROW, LEAVE, MODE,
-    MOVE, NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL, PALETTE_GLOBAL, REFRESH, RUN, SAVE, SAVE_HINT,
-    SAVE_OVERWRITE, SEARCH, SEARCH_GLOBAL, SELECT, SORT, STOP, TOGGLE, UNSET,
+    EVERY_PAGE, EXPORT, EXPORT_COPY, EXPORT_OVERWRITE, EXPORT_ROWS, FIELD, FILTER, FORGET,
+    FORGET_ARMED, FORMAT, HISTORY, HISTORY_GLOBAL, HISTORY_HINT, INSERT, INSERT_ROW,
+    INSPECT_GLOBAL, INSPECT_ROW, LEAVE, MODE, MOVE, NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL,
+    PALETTE_GLOBAL, REFRESH, RUN, SAVE, SAVE_HINT, SAVE_OVERWRITE, SEARCH, SEARCH_GLOBAL, SELECT,
+    SORT, STOP, TOGGLE, UNSET,
 };
 pub(crate) use bindings::{GLOBAL, THEMES, THEMES_GLOBAL};
 
 use crate::connection::ConnectionState;
 use crate::drop::DropPrompt;
 use crate::export::{Button, ExportForm, Stop};
+use crate::history::Picker;
 use crate::inspect::{Inspected, Inspector};
 use crate::model::{Key, KeyPress, Statement};
 use crate::overlay::Overlay;
@@ -53,6 +55,11 @@ impl Stroke {
     #[must_use]
     pub const fn ctrl(key: Key) -> Self {
         Self(KeyPress::ctrl(key))
+    }
+
+    #[must_use]
+    pub const fn alt(key: Key) -> Self {
+        Self(KeyPress::alt(key))
     }
 
     #[must_use]
@@ -111,7 +118,7 @@ fn overlay_bar(state: &State) -> Option<HintBar> {
         Overlay::Commands(_) => fixed(&[], PALETTE_GLOBAL),
         Overlay::Themes { .. } => fixed(THEMES, THEMES_GLOBAL),
         Overlay::Connections { .. } => connections_bar(state),
-        Overlay::History(_) => fixed(HISTORY, HISTORY_GLOBAL),
+        Overlay::History(picker) => history_bar(state, picker),
         Overlay::Save(form) if form.taken().is_some() => fixed(&[], SAVE_OVERWRITE),
         Overlay::Save(_) => fixed(&[], SAVE),
         Overlay::Diagnostics(_) => fixed(&[], DIAGNOSTICS_GLOBAL),
@@ -306,6 +313,25 @@ fn inspect_bar(state: &State, inspector: &Inspector) -> HintBar {
     }
 }
 
+/// `alt-d` is greyed where the query hides every row.
+fn history_bar(state: &State, picker: &Picker) -> HintBar {
+    let forget = if picker.armed.is_some() {
+        &FORGET_ARMED
+    } else {
+        &FORGET
+    };
+    let any = !crate::update::listed(state, picker.layer, picker.query.text()).is_empty();
+
+    HintBar {
+        panel: HISTORY
+            .iter()
+            .map(rendered)
+            .chain([rendered_live(forget, any)])
+            .collect(),
+        ..fixed(&[], HISTORY_GLOBAL)
+    }
+}
+
 /// The stop under `tab` stands in for the panel group. No `q`: the form claims
 /// it.
 fn export_bar(form: &ExportForm) -> HintBar {
@@ -455,6 +481,8 @@ fn name(press: KeyPress) -> String {
 
     if press.modifiers.ctrl {
         format!("ctrl-{key}")
+    } else if press.modifiers.alt {
+        format!("alt-{key}")
     } else {
         key
     }

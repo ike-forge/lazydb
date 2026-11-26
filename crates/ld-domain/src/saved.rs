@@ -84,6 +84,17 @@ impl Saved {
         self.0.insert(connection.clone(), queries);
     }
 
+    /// `false` when no query goes by `name` there.
+    pub fn remove(&mut self, connection: &ConnectionName, name: &QueryName) -> bool {
+        let Some(queries) = self.0.get_mut(connection) else {
+            return false;
+        };
+        let before = queries.len();
+
+        queries.retain(|kept| kept.name != *name);
+        queries.len() != before
+    }
+
     #[must_use]
     pub fn of(&self, connection: &ConnectionName) -> &[SavedQuery] {
         self.0.get(connection).map_or(&[], Vec::as_slice)
@@ -255,6 +266,20 @@ mod tests {
                 .map(|query| query.entry.statement.as_str()),
             Some("SELECT 3;")
         );
+    }
+
+    #[test]
+    fn removing_takes_the_name_case_aside_and_only_on_that_connection() {
+        let mut saved = Saved::default();
+        saved.save(&connection("dev"), query("a", "SELECT 1;", 1));
+        saved.save(&connection("dev"), query("b", "SELECT 2;", 2));
+        saved.save(&connection("prod"), query("a", "SELECT 3;", 3));
+
+        assert!(saved.remove(&connection("dev"), &name("A")));
+        assert!(!saved.remove(&connection("dev"), &name("a")));
+        assert!(!saved.remove(&connection("stage"), &name("b")));
+        assert_eq!(names(&saved, "dev"), ["b"]);
+        assert_eq!(names(&saved, "prod"), ["a"]);
     }
 
     #[test]

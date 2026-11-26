@@ -133,7 +133,7 @@ The bottom bar shows what the focused panel takes; `?` lists all of it.
 | `Y` | Copy the selected rows as `INSERT` statements |
 | `Ctrl-e` | Export rows; open `$EDITOR` from the editor |
 | `Ctrl-x` · `Ctrl-f` | Run the statement · format the buffer |
-| `Ctrl-r` | Saved queries and history; type to search, `Ctrl-r` again for the next layer |
+| `Ctrl-r` | Saved queries and history; type to search, `Ctrl-r` again for the next layer, `Alt-d` to delete |
 | `e` · `i` · `d` | Edit a cell · insert a row · delete rows or drop an object |
 | `x` | In the inspector: stage `NULL` |
 | `/` · `m` · `v` · `y` | In the inspector: the same, over its name / value table |

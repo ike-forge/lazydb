@@ -556,7 +556,7 @@ fn the_open_picker_names_its_own_keys() {
         .map(|hint| hint.action)
         .collect();
 
-    assert_eq!(actions, ["layer", "append", "close"]);
+    assert_eq!(actions, ["layer", "delete", "append", "close"]);
 }
 
 fn disabled() -> State {
@@ -644,4 +644,98 @@ fn a_failed_history_save_warns() {
         toasted(&state),
         Some((Severity::Warning, "history not saved, see the logs"))
     );
+}
+
+fn delete_key(state: &mut State) -> Vec<Effect> {
+    press_binding(state, KeyPress::alt(Key::Char('d')))
+}
+
+#[test]
+fn alt_d_deletes_a_history_row_at_once_and_writes_the_list() {
+    let mut state = having_run(&["SELECT 1;", "SELECT 2;", "SELECT 1;"]);
+    open_history(&mut state);
+
+    let effects = delete_key(&mut state);
+
+    assert_eq!(statements(&state), ["SELECT 2;"]);
+    assert_eq!(saves(&effects), [vec!["SELECT 2;"]]);
+    assert_eq!(listed(&state), ["SELECT 2;"]);
+}
+
+#[test]
+fn deleting_in_the_engine_layer_reaches_every_connection_on_it() {
+    let mut state = having_run(&["SELECT 1;"]);
+    ran_elsewhere(&mut state, "staging", Engine::Postgres, "select 1;", 5);
+    ran_elsewhere(&mut state, "events", Engine::Cassandra, "SELECT 1;", 6);
+    open_history(&mut state);
+    widen(&mut state, Layer::Engine);
+
+    let effects = delete_key(&mut state);
+
+    let written: Vec<&str> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::SaveHistory { connection, .. } => Some(connection.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(written, ["local", "staging"]);
+    assert_eq!(
+        state
+            .histories
+            .of(&ConnectionName::try_new("events").expect("a valid name"))
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn deleting_the_last_row_anywhere_closes_the_picker() {
+    let mut state = having_run(&["SELECT 1;"]);
+    open_history(&mut state);
+
+    delete_key(&mut state);
+
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn deleting_the_bottom_row_keeps_the_cursor_on_the_list() {
+    let mut state = having_run(&["SELECT 1;", "SELECT 2;"]);
+    open_history(&mut state);
+    press(&mut state, Key::Down);
+
+    delete_key(&mut state);
+
+    assert_eq!(picker(&state).cursor.index(), 0);
+    assert_eq!(listed(&state), ["SELECT 2;"]);
+}
+
+#[test]
+fn alt_d_where_the_query_hides_every_row_does_nothing() {
+    let mut state = having_run(&["SELECT 1;"]);
+    open_history(&mut state);
+    type_into(&mut state, "zzz");
+
+    let effects = delete_key(&mut state);
+
+    assert!(effects.is_empty());
+    assert_eq!(statements(&state), ["SELECT 1;"]);
+}
+
+#[test]
+fn alt_d_outside_the_picker_is_refused() {
+    let mut state = having_run(&["SELECT 1;"]);
+
+    let effects = delete_key(&mut state);
+
+    assert!(effects.is_empty());
+    assert_eq!(statements(&state), ["SELECT 1;"]);
+}
+
+/// `ctrl-r` until the picker shows `layer`.
+fn widen(state: &mut State, layer: Layer) {
+    while picker(state).layer != layer {
+        open_history(state);
+    }
 }

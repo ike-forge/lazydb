@@ -19,7 +19,7 @@ use super::connections::{
 };
 use super::drop::{drop_key, open_drop};
 use super::export::{cancel_pending_export, export_chord, export_key, open_export};
-use super::history::{history_key, open_history, step, widen};
+use super::history::{disarm, forget, history_key, open_history, step, widen};
 use super::insert::open_insert;
 use super::inspect::{edit_from_grid, inspect_key, open_inspector};
 use super::palette::{open_palette, palette_key};
@@ -58,11 +58,21 @@ pub(super) fn handle_key(state: &mut State, press: KeyPress) -> Vec<Effect> {
         return failed_key(state, press.key);
     }
 
-    // alt and unclaimed ctrl chords are refused, not reinterpreted. shift is
+    let forgets = press == KeyPress::alt(Key::Char('d'));
+    if !forgets {
+        disarm(state);
+    }
+
+    // Unclaimed alt and ctrl chords are refused, not reinterpreted. shift is
     // not checked: a shifted arrow stays a synonym, leaving it free for a
     // future extend-selection binding.
     if press.modifiers.alt {
-        return Vec::new();
+        let picking = matches!(state.overlay, Some(Overlay::History(_)));
+        return if forgets && picking {
+            forget(state)
+        } else {
+            Vec::new()
+        };
     }
 
     if press.modifiers.ctrl {

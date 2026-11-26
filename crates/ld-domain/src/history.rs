@@ -239,11 +239,6 @@ impl Histories {
         let mut recalled: Vec<Recalled<'_>> = self
             .0
             .iter()
-            .filter(|(name, _)| match layer {
-                Layer::Default | Layer::Connection => Some(*name) == connection,
-                Layer::Saved => false,
-                Layer::Engine | Layer::All => true,
-            })
             .flat_map(|(name, history)| {
                 history.entries.iter().map(move |entry| Recalled {
                     connection: name,
@@ -251,7 +246,15 @@ impl Histories {
                     name: None,
                 })
             })
-            .filter(|recalled| layer != Layer::Engine || recalled.entry.engine == engine)
+            .filter(|recalled| {
+                in_layer(
+                    layer,
+                    connection,
+                    engine,
+                    recalled.connection,
+                    recalled.entry,
+                )
+            })
             .collect();
 
         // Stable, so equal times keep connection order, then the file's.
@@ -260,6 +263,46 @@ impl Histories {
         let mut seen = BTreeSet::new();
         recalled.retain(|recalled| seen.insert(folded(&recalled.entry.statement)));
         recalled
+    }
+
+    /// Every run of `statement` that `layer` lists, case aside: the row and
+    /// the runs it folded. The connections whose list changed.
+    pub fn forget(
+        &mut self,
+        statement: &str,
+        layer: Layer,
+        connection: Option<&ConnectionName>,
+        engine: Engine,
+    ) -> Vec<ConnectionName> {
+        let statement = folded(statement);
+
+        self.0
+            .iter_mut()
+            .filter_map(|(name, history)| {
+                let before = history.entries.len();
+                history.entries.retain(|entry| {
+                    !(in_layer(layer, connection, engine, name, entry)
+                        && folded(&entry.statement) == statement)
+                });
+                (history.entries.len() != before).then(|| name.clone())
+            })
+            .collect()
+    }
+}
+
+/// Whether `layer` lists `entry`, run on `ran_on`; history only.
+fn in_layer(
+    layer: Layer,
+    connection: Option<&ConnectionName>,
+    engine: Engine,
+    ran_on: &ConnectionName,
+    entry: &Entry,
+) -> bool {
+    match layer {
+        Layer::Default | Layer::Connection => Some(ran_on) == connection,
+        Layer::Saved => false,
+        Layer::Engine => entry.engine == engine,
+        Layer::All => true,
     }
 }
 
@@ -270,6 +313,15 @@ pub struct Picker {
     pub layer: Layer,
     pub query: Line,
     pub cursor: Cursor,
+    /// The saved query one `alt-d` asked about; the next deletes it.
+    pub armed: Option<Armed>,
+}
+
+/// Named by connection and name, not by row: a row moves as the list changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Armed {
+    pub connection: ConnectionName,
+    pub name: QueryName,
 }
 
 /// A recalled entry as the picker lists it: `ranges` are the query's hits in
@@ -554,6 +606,68 @@ mod tests {
         of.iter()
             .map(|(connection, statement)| ((*connection).to_owned(), (*statement).to_owned()))
             .collect()
+    }
+
+    /// `SELECT 4;` run on staging, prod (as `select 4;`) and events, the
+    /// Cassandra one.
+    fn forgotten(layer: Layer, statement: &str) -> (Histories, Vec<ConnectionName>) {
+        let mut histories = layered();
+        histories.record(
+            &name("prod"),
+            on(Engine::Postgres, "select 4;", 50),
+            limit(10),
+        );
+        histories.record(
+            &name("events"),
+            on(Engine::Cassandra, "SELECT 4;", 60),
+            limit(10),
+        );
+        let changed = histories.forget(statement, layer, Some(&name("staging")), Engine::Postgres);
+        (histories, changed)
+    }
+
+    fn kept(histories: &Histories, connection: &str) -> Vec<String> {
+        histories
+            .of(&name(connection))
+            .iter()
+            .map(|entry| entry.statement.clone())
+            .collect()
+    }
+
+    #[test]
+    fn forgetting_in_the_connection_layer_spares_other_connections() {
+        let (histories, changed) = forgotten(Layer::Connection, "SELECT 4;");
+
+        assert_eq!(changed, [name("staging")]);
+        assert_eq!(kept(&histories, "staging"), ["SELECT 1;"]);
+        assert_eq!(kept(&histories, "prod"), ["select 4;", "SELECT 2;"]);
+        assert_eq!(kept(&histories, "events"), ["SELECT 4;", "SELECT 3;"]);
+    }
+
+    #[test]
+    fn forgetting_in_the_engine_layer_spares_other_engines() {
+        let (histories, changed) = forgotten(Layer::Engine, "SELECT 4;");
+
+        assert_eq!(changed, [name("prod"), name("staging")]);
+        assert_eq!(kept(&histories, "prod"), ["SELECT 2;"]);
+        assert_eq!(kept(&histories, "events"), ["SELECT 4;", "SELECT 3;"]);
+    }
+
+    #[test]
+    fn forgetting_in_the_last_layer_takes_every_run_case_aside() {
+        let (histories, changed) = forgotten(Layer::All, "select 4;");
+
+        assert_eq!(changed, [name("events"), name("prod"), name("staging")]);
+        assert_eq!(kept(&histories, "staging"), ["SELECT 1;"]);
+        assert_eq!(kept(&histories, "prod"), ["SELECT 2;"]);
+        assert_eq!(kept(&histories, "events"), ["SELECT 3;"]);
+    }
+
+    #[test]
+    fn forgetting_what_was_never_run_changes_nothing() {
+        let (_, changed) = forgotten(Layer::All, "SELECT 9;");
+
+        assert!(changed.is_empty());
     }
 
     #[test]
