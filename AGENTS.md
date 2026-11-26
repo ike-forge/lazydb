@@ -25,7 +25,7 @@ if every engine has it (vision.md §2).
   defects and engine semantics the code cannot express.
 - **Determinism** in the fast tiers: no wall clock, network, filesystem,
   unseeded randomness, `sleep` or `HashMap` order. Time enters as `Msg::Tick`.
-- **Git: commit freely, never `pull`, never `push`.**
+- **Git: commit freely, never `pull`.** Push only when asked.
 - **Conventional Commits**: `<type>[scope]: <description>`, imperative,
   lowercase, no trailing period.
 
