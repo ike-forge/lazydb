@@ -1,29 +1,36 @@
-//! The query history picker. Unlike the other pickers it scrolls: the history
+//! The query history picker: the query on top, the rows under it, the layers
+//! along the bottom border. Unlike the other pickers it scrolls: the history
 //! can outgrow any frame.
 
 use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
-use ld_domain::search::Search;
+use ld_domain::history::Layer;
 use ld_domain::style::Token;
+use ld_domain::view::{HistoryRow, HistoryView};
 
 use crate::theme::Theme;
 
 const MIN_WIDTH: u16 = 30;
-const MAX_WIDTH: u16 = 100;
+const MAX_WIDTH: u16 = 120;
 const PAD: u16 = 1;
+/// Two borders and the query line.
+const CHROME: u16 = 3;
+const PLACE_WIDTH: usize = 16;
+const PROMPT: &str = "❯ ";
 const ELLIPSIS: char = '…';
 
 /// Zero gates `ctrl-r`.
 pub(crate) fn visible_rows(area: Rect) -> usize {
-    if area.width < MIN_WIDTH || area.height < 3 {
+    if area.width < MIN_WIDTH || area.height < CHROME + 1 {
         return 0;
     }
 
-    usize::from(area.height - 2)
+    usize::from(area.height - CHROME)
 }
 
 fn rect(area: Rect, rows: usize) -> Option<Rect> {
@@ -33,7 +40,7 @@ fn rect(area: Rect, rows: usize) -> Option<Rect> {
         return None;
     }
 
-    let height = u16::try_from(rows.clamp(1, visible) + 2).unwrap_or(u16::MAX);
+    let height = u16::try_from(rows.clamp(1, visible)).unwrap_or(u16::MAX) + CHROME;
     let width = area.width.saturating_sub(4).clamp(MIN_WIDTH, MAX_WIDTH);
 
     Some(Rect::new(
@@ -44,33 +51,36 @@ fn rect(area: Rect, rows: usize) -> Option<Rect> {
     ))
 }
 
-/// One line per row, showing the statement's start.
-fn clipped(label: &str, width: usize) -> String {
-    if label.chars().count() <= width {
-        return label.to_owned();
+/// Cut at `width` characters with an ellipsis; the byte length kept before it.
+fn clipped(text: &str, width: usize) -> (String, usize) {
+    if text.chars().count() <= width {
+        return (text.to_owned(), text.len());
     }
 
-    let mut cut: String = label.chars().take(width.saturating_sub(1)).collect();
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    let length = kept.len();
+    let mut cut = kept;
     cut.push(ELLIPSIS);
-    cut
+    (cut, length)
 }
 
-/// `labels` is what a sift left; `selected` counts in it.
-pub(crate) fn render(
-    frame: &mut Frame,
-    labels: &[String],
-    selected: usize,
-    search: Option<&Search>,
-    theme: Theme,
-) {
-    let Some(area) = rect(frame.area(), labels.len()) else {
+fn padded(text: &str, width: usize) -> String {
+    let (cut, _) = clipped(text, width);
+    let fill = width.saturating_sub(cut.width());
+
+    format!("{cut}{}", " ".repeat(fill))
+}
+
+pub(crate) fn render(frame: &mut Frame, view: &HistoryView, theme: Theme) {
+    let Some(area) = rect(frame.area(), view.total) else {
         return;
     };
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(theme.focus_border())
-        .title("History");
+        .title("History")
+        .title_bottom(layers(view, theme));
     let inner = block.inner(area).inner(Margin {
         horizontal: PAD,
         vertical: 0,
@@ -80,36 +90,138 @@ pub(crate) fn render(
     frame.buffer_mut().set_style(area, theme.ground());
     frame.render_widget(block, area);
 
-    if labels.is_empty() {
+    let query_line = Rect::new(inner.x, inner.y, inner.width, 1);
+    let list = Rect::new(
+        inner.x,
+        inner.y + 1,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+
+    render_query(frame, query_line, view, theme);
+
+    if view.rows.is_empty() {
         frame.render_widget(
-            List::new([ListItem::new(Line::from(Span::styled(
+            Paragraph::new(Span::styled(
                 "no statement matches",
                 theme.style(Token::Faint),
-            )))]),
-            inner,
+            )),
+            list,
         );
         return;
     }
 
-    let width = usize::from(inner.width);
-    let items: Vec<ListItem> = labels
+    let age_width = view
+        .rows
         .iter()
-        .map(|label| {
-            ListItem::new(Line::from(crate::highlight::spans(
-                &clipped(label, width),
-                search,
-                Style::default(),
-                theme,
-            )))
-        })
+        .map(|row| row.age.width())
+        .max()
+        .unwrap_or(0);
+    let place_width = view
+        .rows
+        .iter()
+        .map(|row| row.place.width())
+        .max()
+        .unwrap_or(0)
+        .min(PLACE_WIDTH);
+    let items: Vec<ListItem> = view
+        .rows
+        .iter()
+        .map(|row| item(row, age_width, place_width, usize::from(list.width), theme))
         .collect();
-    let mut state = ListState::default().with_selected(Some(selected));
+    let mut state = ListState::default().with_selected(Some(view.selected));
 
     frame.render_stateful_widget(
         List::new(items).highlight_style(theme.style(Token::Selected)),
-        inner,
+        list,
         &mut state,
     );
+}
+
+/// The caret stays on screen: a query wider than the line scrolls left.
+fn render_query(frame: &mut Frame, area: Rect, view: &HistoryView, theme: Theme) {
+    let room = usize::from(area.width)
+        .saturating_sub(PROMPT.width())
+        .saturating_sub(1);
+    let skipped = view.caret.saturating_sub(room);
+    let shown: String = view.query.chars().skip(skipped).take(room).collect();
+    let before_caret: String = view
+        .query
+        .chars()
+        .skip(skipped)
+        .take(view.caret - skipped)
+        .collect();
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(PROMPT, theme.style(Token::Faint)),
+            Span::raw(shown),
+        ])),
+        area,
+    );
+
+    let caret = u16::try_from(PROMPT.width() + before_caret.width()).unwrap_or(area.width);
+    frame.set_cursor_position(((area.x + caret).min(area.right().saturating_sub(1)), area.y));
+}
+
+fn item(
+    row: &HistoryRow,
+    age_width: usize,
+    place_width: usize,
+    width: usize,
+    theme: Theme,
+) -> ListItem<'static> {
+    let faint = theme.style(Token::Faint);
+    let mut spans = Vec::new();
+    let mut used = 0;
+
+    if age_width > 0 {
+        spans.push(Span::styled(format!("{:>age_width$}  ", row.age), faint));
+        used += age_width + 2;
+    }
+    if place_width > 0 {
+        spans.push(Span::styled(
+            format!("{}  ", padded(&row.place, place_width)),
+            faint,
+        ));
+        used += place_width + 2;
+    }
+
+    let (statement, kept) = clipped(&row.statement, width.saturating_sub(used));
+    let matched: Vec<_> = row
+        .matched
+        .iter()
+        .filter(|range| range.start < kept)
+        .map(|range| range.start..range.end.min(kept))
+        .collect();
+    spans.extend(crate::highlight::ranged(
+        &statement,
+        &matched,
+        Style::default(),
+        theme,
+    ));
+
+    ListItem::new(Line::from(spans))
+}
+
+/// The current layer stands out; the others say where `ctrl-r` goes next.
+fn layers(view: &HistoryView, theme: Theme) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+
+    for (layer, name) in Layer::ALL.into_iter().zip(&view.layers) {
+        if layer != Layer::Connection {
+            spans.push(Span::styled(" · ", theme.style(Token::Faint)));
+        }
+        let style = if layer == view.layer {
+            theme.style(Token::Selected)
+        } else {
+            theme.style(Token::Faint)
+        };
+        spans.push(Span::styled(name.clone(), style));
+    }
+
+    spans.push(Span::raw(" "));
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -121,30 +233,53 @@ mod tests {
 
     use super::*;
 
-    fn drawn(width: u16, height: u16, labels: &[String], selected: usize) -> String {
+    fn view(rows: Vec<HistoryRow>, selected: usize) -> HistoryView {
+        HistoryView {
+            total: rows.len(),
+            rows,
+            selected,
+            layer: Layer::Connection,
+            layers: ["prod".to_owned(), "PostgreSQL".to_owned(), "all".to_owned()],
+            query: String::new(),
+            caret: 0,
+        }
+    }
+
+    fn row(statement: &str) -> HistoryRow {
+        HistoryRow {
+            age: "3h".to_owned(),
+            place: String::new(),
+            statement: statement.to_owned(),
+            matched: Vec::new(),
+        }
+    }
+
+    fn drawn(width: u16, height: u16, view: &HistoryView) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("a backend");
         let theme = Theme::of(&ThemeChoice::default());
 
         terminal
-            .draw(|frame| render(frame, labels, selected, None, theme))
+            .draw(|frame| render(frame, view, theme))
             .expect("a frame");
 
-        terminal
-            .backend()
-            .buffer()
+        let buffer = terminal.backend().buffer();
+        buffer
             .content()
-            .iter()
-            .map(Cell::symbol)
-            .collect()
+            .chunks(usize::from(width))
+            .map(|line| line.iter().map(Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
-    fn numbered(count: usize) -> Vec<String> {
-        (0..count).map(|n| format!("SELECT {n} FROM t;")).collect()
+    fn numbered(count: usize) -> Vec<HistoryRow> {
+        (0..count)
+            .map(|n| row(&format!("SELECT {n} FROM t;")))
+            .collect()
     }
 
     #[test]
     fn the_block_lists_the_rows_under_its_title() {
-        let frame = drawn(80, 24, &numbered(3), 0);
+        let frame = drawn(80, 24, &view(numbered(3), 0));
 
         assert!(frame.contains("History"));
         for n in 0..3 {
@@ -153,8 +288,45 @@ mod tests {
     }
 
     #[test]
+    fn each_row_leads_with_its_age() {
+        let frame = drawn(80, 24, &view(numbered(1), 0));
+
+        assert!(frame.contains("3h  SELECT 0 FROM t;"), "{frame}");
+    }
+
+    #[test]
+    fn a_wider_layer_names_where_each_ran() {
+        let mut rows = numbered(2);
+        rows[0].place = "prod".to_owned();
+        rows[1].place = "staging".to_owned();
+
+        let frame = drawn(80, 24, &view(rows, 0));
+
+        assert!(frame.contains("3h  prod     SELECT 0 FROM t;"), "{frame}");
+        assert!(frame.contains("3h  staging  SELECT 1 FROM t;"), "{frame}");
+    }
+
+    #[test]
+    fn the_bottom_border_names_every_layer() {
+        let frame = drawn(80, 24, &view(numbered(1), 0));
+
+        assert!(frame.contains("prod · PostgreSQL · all"), "{frame}");
+    }
+
+    #[test]
+    fn the_query_is_drawn_after_the_prompt() {
+        let mut typed = view(numbered(1), 0);
+        typed.query = "orders".to_owned();
+        typed.caret = 6;
+
+        let frame = drawn(80, 24, &typed);
+
+        assert!(frame.contains("❯ orders"), "{frame}");
+    }
+
+    #[test]
     fn a_list_longer_than_the_frame_scrolls_to_the_cursor() {
-        let frame = drawn(80, 12, &numbered(100), 80);
+        let frame = drawn(80, 12, &view(numbered(100), 80));
 
         assert!(frame.contains("SELECT 80 FROM t;"));
         assert!(!frame.contains("SELECT 0 FROM t;"));
@@ -163,29 +335,46 @@ mod tests {
     #[test]
     fn a_statement_wider_than_the_block_is_cut_with_an_ellipsis() {
         let long = format!("SELECT {} FROM t;", "column, ".repeat(40));
-        let frame = drawn(60, 12, &[long], 0);
+        let frame = drawn(60, 12, &view(vec![row(&long)], 0));
 
         assert!(frame.contains('…'));
         assert!(!frame.contains("FROM t;"));
     }
 
     #[test]
-    fn a_filter_that_matched_nothing_says_so() {
-        let frame = drawn(80, 24, &[], 0);
+    fn a_query_that_matched_nothing_says_so() {
+        let mut empty = view(Vec::new(), 0);
+        empty.total = 3;
+
+        let frame = drawn(80, 24, &empty);
 
         assert!(frame.contains("no statement matches"));
     }
 
     #[test]
+    fn the_block_keeps_its_height_while_the_query_narrows_it() {
+        let all = view(numbered(5), 0);
+        let mut narrowed = view(numbered(1), 0);
+        narrowed.total = 5;
+
+        let height = |frame: String| frame.lines().filter(|line| line.contains('│')).count();
+
+        assert_eq!(
+            height(drawn(80, 24, &all)),
+            height(drawn(80, 24, &narrowed))
+        );
+    }
+
+    #[test]
     fn a_frame_too_small_to_hold_it_draws_nothing() {
-        let frame = drawn(MIN_WIDTH - 1, 24, &numbered(3), 0);
+        let frame = drawn(MIN_WIDTH - 1, 24, &view(numbered(3), 0));
 
         assert!(!frame.contains("History"));
     }
 
     #[test]
-    fn visible_rows_is_the_frame_less_the_borders() {
-        assert_eq!(visible_rows(Rect::new(0, 0, 80, 24)), 22);
-        assert_eq!(visible_rows(Rect::new(0, 0, 80, 2)), 0);
+    fn visible_rows_is_the_frame_less_the_borders_and_the_query() {
+        assert_eq!(visible_rows(Rect::new(0, 0, 80, 24)), 21);
+        assert_eq!(visible_rows(Rect::new(0, 0, 80, 3)), 0);
     }
 }

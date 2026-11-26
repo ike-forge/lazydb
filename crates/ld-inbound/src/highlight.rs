@@ -2,6 +2,8 @@
 //! DDL wraps and truncates here, so source offsets would be wrong. A match
 //! split by a wrap is painted on neither half.
 
+use std::ops::Range;
+
 use ld_domain::search::Search;
 use ld_domain::style::Token;
 use ratatui::style::Style;
@@ -16,28 +18,36 @@ pub(crate) fn spans(
     base: Style,
     theme: Theme,
 ) -> Vec<TextSpan<'static>> {
-    let Some(search) = search else {
-        return vec![TextSpan::styled(text.to_owned(), base)];
-    };
+    let ranges = search.map(|search| search.ranges(text)).unwrap_or_default();
 
-    let ranges = search.ranges(text);
-    if ranges.is_empty() {
-        return vec![TextSpan::styled(text.to_owned(), base)];
-    }
+    ranged(text, &ranges, base, theme)
+}
 
+/// `ranges` sorted, disjoint and on character boundaries; any part past the
+/// end of `text` is dropped, so a cut string keeps its leading hits.
+pub(crate) fn ranged(
+    text: &str,
+    ranges: &[Range<usize>],
+    base: Style,
+    theme: Theme,
+) -> Vec<TextSpan<'static>> {
     let matched = base.patch(theme.style(Token::Match));
     let mut spans = Vec::with_capacity(ranges.len() * 2 + 1);
     let mut at = 0;
 
     for range in ranges {
+        let end = range.end.min(text.len());
+        if range.start >= end || !text.is_char_boundary(end) {
+            continue;
+        }
         if at < range.start {
             spans.push(TextSpan::styled(text[at..range.start].to_owned(), base));
         }
-        spans.push(TextSpan::styled(text[range.clone()].to_owned(), matched));
-        at = range.end;
+        spans.push(TextSpan::styled(text[range.start..end].to_owned(), matched));
+        at = end;
     }
 
-    if at < text.len() {
+    if at < text.len() || spans.is_empty() {
         spans.push(TextSpan::styled(text[at..].to_owned(), base));
     }
 
@@ -76,6 +86,14 @@ mod tests {
             spans[1].style.add_modifier.contains(Modifier::DIM),
             "and keeps what the base already carried"
         );
+    }
+
+    #[test]
+    fn a_range_past_a_cut_string_is_clipped_to_it() {
+        let spans = ranged("ord…", &[0..2, 3..9], Style::default(), Theme::default());
+
+        let texts: Vec<&str> = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(texts, ["or", "d", "…"]);
     }
 
     #[test]

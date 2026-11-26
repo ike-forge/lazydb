@@ -72,7 +72,7 @@ use yank::copied;
 pub(crate) use connections::connection_names;
 pub(crate) use drop::drop_target;
 pub(crate) use edit::{editable_here, has_uncommitted, nullable_here};
-pub(crate) use history::history_labels;
+pub(crate) use history::listed;
 pub(crate) use insert::insert_form;
 pub(crate) use inspect::inspection;
 pub(crate) use refresh::{Rerun, rerun_of, schema_refresh};

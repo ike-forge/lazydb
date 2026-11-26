@@ -4,11 +4,15 @@
 //! [`ConnId`]: crate::model::ConnId
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use crate::clock::Stamp;
 use crate::config::{ConnectionName, HistoryLimit};
 use crate::engine::Engine;
+use crate::fuzzy::Fuzzy;
+use crate::line::Line;
 use crate::sql::fold;
+use crate::viewport::Cursor;
 
 /// One statement as it was run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +183,62 @@ impl Histories {
         recalled.retain(|recalled| seen.insert(folded(&recalled.entry.statement)));
         recalled
     }
+}
+
+/// The open picker. The query takes keys at once, as atuin's does; the cursor
+/// counts in what it left.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Picker {
+    pub layer: Layer,
+    pub query: Line,
+    pub cursor: Cursor,
+}
+
+/// A recalled entry as the picker lists it: `ranges` are the query's hits in
+/// `label`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ranked<'a> {
+    pub recalled: Recalled<'a>,
+    pub label: String,
+    pub ranges: Vec<Range<usize>>,
+}
+
+/// Best hit first, newest first among equals; in recall order without a
+/// query.
+#[must_use]
+pub fn ranked<'a>(recalled: Vec<Recalled<'a>>, query: &str) -> Vec<Ranked<'a>> {
+    let labelled = recalled.into_iter().map(|recalled| {
+        let label = one_line(&recalled.entry.statement);
+        (recalled, label)
+    });
+
+    let Some(fuzzy) = Fuzzy::new(query) else {
+        return labelled
+            .map(|(recalled, label)| Ranked {
+                recalled,
+                label,
+                ranges: Vec::new(),
+            })
+            .collect();
+    };
+
+    let mut hits: Vec<(i64, Ranked<'a>)> = labelled
+        .filter_map(|(recalled, label)| {
+            let hit = fuzzy.find(&label)?;
+            Some((
+                hit.score,
+                Ranked {
+                    recalled,
+                    label,
+                    ranges: hit.ranges,
+                },
+            ))
+        })
+        .collect();
+
+    // Stable: equal scores keep recall order, which is newest first.
+    hits.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    hits.into_iter().map(|(_, ranked)| ranked).collect()
 }
 
 /// One row per statement.
@@ -499,6 +559,57 @@ mod tests {
                 .recall(Layer::Connection, None, Engine::Postgres)
                 .is_empty()
         );
+    }
+
+    fn ranked_labels(histories: &Histories, query: &str) -> Vec<String> {
+        ranked(histories.recall(Layer::All, None, Engine::Postgres), query)
+            .into_iter()
+            .map(|ranked| ranked.label)
+            .collect()
+    }
+
+    #[test]
+    fn without_a_query_everything_is_listed_newest_first() {
+        assert_eq!(
+            ranked_labels(&layered(), ""),
+            ["SELECT 4;", "SELECT 3;", "SELECT 2;", "SELECT 1;"]
+        );
+    }
+
+    #[test]
+    fn a_query_keeps_what_it_matches_best_first_then_newest() {
+        let mut histories = Histories::default();
+        for (statement, seconds) in [
+            ("SELECT * FROM orders;", 1),
+            ("SELECT o, r, d FROM users;", 2),
+            ("DELETE FROM orders;", 3),
+            ("SELECT 1;", 4),
+        ] {
+            histories.record(&name("dev"), at(statement, seconds), limit(10));
+        }
+
+        assert_eq!(
+            ranked_labels(&histories, "ord"),
+            [
+                "DELETE FROM orders;",
+                "SELECT * FROM orders;",
+                "SELECT o, r, d FROM users;"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_ranked_row_is_one_line_with_the_hits_in_it() {
+        let mut histories = Histories::default();
+        histories.record(&name("dev"), at("SELECT *\n  FROM orders;", 1), limit(10));
+
+        let rows = ranked(
+            histories.recall(Layer::All, None, Engine::Postgres),
+            "orders",
+        );
+
+        assert_eq!(rows[0].label, "SELECT * FROM orders;");
+        assert_eq!(&rows[0].label[rows[0].ranges[0].clone()], "orders");
     }
 
     #[test]

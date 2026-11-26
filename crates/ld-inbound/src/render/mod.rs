@@ -255,19 +255,8 @@ fn render_overlay(frame: &mut Frame, view: &ViewModel, hint_bar: Rect, theme: Th
                 ..Wrapped::default()
             };
         }
-        Some(OverlayView::History {
-            labels,
-            selected,
-            sift,
-        }) => {
-            crate::history::render(
-                frame,
-                labels,
-                *selected,
-                sift.as_ref().and_then(|sift| sift.search.as_ref()),
-                theme,
-            );
-            render_sift(frame, hint_bar, sift.as_ref(), view, theme);
+        Some(OverlayView::History(history)) => {
+            crate::history::render(frame, history, theme);
         }
         Some(OverlayView::Diagnostics { rows, selected }) => {
             crate::diagnostics::render(frame, rows, *selected, theme);
@@ -380,7 +369,7 @@ fn dims_the_panels(overlay: Option<&OverlayView>) -> bool {
             | OverlayView::Commands { .. }
             | OverlayView::Themes { .. }
             | OverlayView::Connections { .. }
-            | OverlayView::History { .. }
+            | OverlayView::History(_)
             | OverlayView::Diagnostics { .. }
             // A drop names its own subject.
             | OverlayView::Drop(_)

@@ -19,7 +19,7 @@ use super::connections::{
 };
 use super::drop::{drop_key, open_drop};
 use super::export::{cancel_pending_export, export_chord, export_key, open_export};
-use super::history::{history_key, open_history};
+use super::history::{history_key, open_history, step, widen};
 use super::insert::open_insert;
 use super::inspect::{edit_from_grid, inspect_key, open_inspector};
 use super::palette::{open_palette, palette_key};
@@ -103,7 +103,7 @@ pub(super) fn overlay_key(state: &mut State, key: Key) -> Option<Vec<Effect>> {
         Some(Overlay::Inspect(_)) => inspect_key(state, key),
         Some(Overlay::Themes { .. }) => themes_key(state, key),
         Some(Overlay::Connections { .. }) => connections_key(state, key),
-        Some(Overlay::History { .. }) => history_key(state, key),
+        Some(Overlay::History(_)) => history_key(state, key),
         Some(Overlay::Search(_)) => search_key(state, key),
         Some(Overlay::Export(_)) => export_key(state, key),
         Some(Overlay::Filter(_)) => {
@@ -180,14 +180,12 @@ pub(super) fn panel_key(state: &mut State, key: Key) -> Vec<Effect> {
 
 pub(super) fn takes_text(state: &State) -> bool {
     match &state.overlay {
-        Some(Overlay::Search(_) | Overlay::Export(_) | Overlay::Filter(_)) => true,
+        Some(
+            Overlay::Search(_) | Overlay::Export(_) | Overlay::Filter(_) | Overlay::History(_),
+        ) => true,
         Some(Overlay::Drop(prompt)) => prompt.takes_text(),
         Some(Overlay::Commands(panel)) => panel.sift().is_some(),
-        Some(
-            Overlay::Themes { sift, .. }
-            | Overlay::Connections { sift, .. }
-            | Overlay::History { sift, .. },
-        ) => sift.is_some(),
+        Some(Overlay::Themes { sift, .. } | Overlay::Connections { sift, .. }) => sift.is_some(),
         Some(Overlay::Inspect(inspector)) => {
             inspector.field().is_some() || inspector.is_searching()
         }
@@ -201,7 +199,6 @@ pub(super) fn takes_text(state: &State) -> bool {
 pub(super) fn goto(state: &mut State, edge: Edge) {
     let last = BuiltIn::ALL.len() + state.config.themes.len();
     let connections = state.config.connections.len();
-    let history = state.history().len();
     let (commit_lines, commit_rows) = commit_extent(state);
 
     match &mut state.overlay {
@@ -232,16 +229,13 @@ pub(super) fn goto(state: &mut State, edge: Edge) {
             Edge::Start => cursor.to_start(),
             Edge::End => cursor.to_end(connections),
         },
-        Some(Overlay::History { cursor, .. }) => match edge {
-            Edge::Start => cursor.to_start(),
-            Edge::End => cursor.to_end(history),
-        },
         Some(Overlay::Message(_)) | None => scroll(state, edge.motion()),
         // `Inspect` here is under a stacked message.
         Some(
             Overlay::Inspect(_)
             | Overlay::Failed(_)
             | Overlay::Search(_)
+            | Overlay::History(_)
             | Overlay::Export(_)
             | Overlay::Filter(_)
             | Overlay::Drop(_)
@@ -366,15 +360,6 @@ pub(super) fn dismiss_overlay(state: &mut State) -> bool {
             state.overlay = Some(Overlay::Connections { cursor, sift: None });
             true
         }
-        Some(Overlay::History {
-            cursor,
-            sift: Some(sift),
-        }) => {
-            let mut cursor = cursor;
-            cursor.go_to(sift.origin(), state.history().len());
-            state.overlay = Some(Overlay::History { cursor, sift: None });
-            true
-        }
         // `Disconnected`, not `Unchosen`, so `offer_connections` does not
         // reopen it.
         Some(Overlay::Connections { .. }) => {
@@ -402,7 +387,7 @@ pub(super) fn dismiss_overlay(state: &mut State) -> bool {
         Some(
             Overlay::Message(_)
             | Overlay::Commands(_)
-            | Overlay::History { .. }
+            | Overlay::History(_)
             | Overlay::Diagnostics(_)
             | Overlay::Inspect(_)
             | Overlay::Export(_)
@@ -472,6 +457,15 @@ pub(super) fn ctrl_key(state: &mut State, key: Key) -> Vec<Effect> {
     if let Some(effects) = export_chord(state, key) {
         return effects;
     }
+    if matches!(state.overlay, Some(Overlay::History(_))) {
+        match key {
+            Key::Char('r') => widen(state),
+            Key::Char('n') => step(state, true),
+            Key::Char('p') => step(state, false),
+            _ => {}
+        }
+        return Vec::new();
+    }
 
     if matches!(
         state.overlay,
@@ -479,7 +473,6 @@ pub(super) fn ctrl_key(state: &mut State, key: Key) -> Vec<Effect> {
             Overlay::Commands(_)
                 | Overlay::Themes { .. }
                 | Overlay::Connections { .. }
-                | Overlay::History { .. }
                 | Overlay::Diagnostics(_)
                 | Overlay::Inspect(_)
                 | Overlay::Export(_)
@@ -612,7 +605,7 @@ pub(super) fn page(state: &mut State, key: Key) -> Vec<Effect> {
         Some(Overlay::Commands(_)) => palette_key(state, key),
         Some(Overlay::Themes { .. }) => themes_key(state, key),
         Some(Overlay::Connections { .. }) => connections_key(state, key),
-        Some(Overlay::History { .. }) => history_key(state, key),
+        Some(Overlay::History(_)) => history_key(state, key),
         Some(Overlay::Diagnostics(_)) => diagnostics_key(state, key),
         Some(Overlay::Inspect(_)) => inspect_key(state, key),
         Some(Overlay::Commit(_)) => commit_key(state, key),

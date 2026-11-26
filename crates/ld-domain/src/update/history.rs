@@ -1,153 +1,135 @@
-//! The query history picker.
+//! The query history picker: typing filters at once, `ctrl-r` widens the
+//! layer, `⏎` appends.
 
-use crate::history::one_line;
+use crate::connection::ConnectionState;
+use crate::history::{Layer, Picker, Ranked, ranked};
 use crate::model::Key;
 use crate::overlay::Overlay;
 use crate::panel::Panel;
-use crate::search::Sift;
 use crate::state::State;
 use crate::style::Severity;
-use crate::viewport::Cursor;
 
-use super::{Effect, escape, picker_matches, quit};
+use super::keys::edit_line;
+use super::{Effect, escape};
 
-/// Shared with the view, for [`theme_labels`]'s reason.
-pub(crate) fn history_labels(state: &State) -> Vec<String> {
-    state
-        .history()
-        .iter()
-        .map(|entry| one_line(&entry.statement))
-        .collect()
+/// What the picker lists for `layer` and `query`; shared with the view.
+pub(crate) fn listed<'a>(state: &'a State, layer: Layer, query: &str) -> Vec<Ranked<'a>> {
+    let connection = match &state.connection {
+        ConnectionState::Connected(connection) => Some(&connection.name),
+        ConnectionState::Unchosen
+        | ConnectionState::Disconnected
+        | ConnectionState::Connecting { .. }
+        | ConnectionState::Failed(_) => None,
+    };
+
+    ranked(
+        state
+            .histories
+            .recall(layer, connection, state.queries.engine()),
+        query,
+    )
 }
 
-/// Refused with nothing to list, so the bar greys it instead.
+/// Refused with nothing to list, so the bar greys it instead. Opens on the
+/// narrowest layer with anything in it.
 pub(super) fn open_history(state: &mut State) {
-    let busy = matches!(state.overlay, Some(Overlay::Search(_)));
-
-    if state.focus() == Panel::Queries && !busy && state.config.history.limit.is_off() {
+    if state.focus() != Panel::Queries || matches!(state.overlay, Some(Overlay::Search(_))) {
+        return;
+    }
+    if state.config.history.limit.is_off() {
         state.notify(Severity::Info, "history is disabled");
-        return;
-    }
-
-    if state.focus() != Panel::Queries || busy {
-        return;
-    }
-    if state.history().is_empty() {
-        state.notify(Severity::Info, "nothing in the history yet");
         return;
     }
     if state.geometry.history_rows() == 0 {
         state.notify(Severity::Info, "no room to draw the history");
         return;
     }
+    let Some(layer) = Layer::ALL
+        .into_iter()
+        .find(|layer| !listed(state, *layer, "").is_empty())
+    else {
+        state.notify(Severity::Info, "nothing in the history yet");
+        return;
+    };
 
-    state.overlay = Some(Overlay::History {
-        cursor: Cursor::default(),
-        sift: None,
-    });
+    state.overlay = Some(Overlay::History(Picker {
+        layer,
+        ..Picker::default()
+    }));
 }
 
+/// `ctrl-r` while open: wraps back to the narrowest layer.
+pub(super) fn widen(state: &mut State) {
+    if let Some(Overlay::History(picker)) = &mut state.overlay {
+        picker.layer = picker.layer.next();
+        picker.cursor.to_start();
+    }
+}
+
+/// `ctrl-n`/`ctrl-p` while open, as in a shell.
+pub(super) fn step(state: &mut State, older: bool) {
+    move_cursor(state, if older { Key::Down } else { Key::Up });
+}
+
+/// No `q`: it is a letter of the query.
 pub(super) fn history_key(state: &mut State, key: Key) -> Vec<Effect> {
-    if matches!(state.overlay, Some(Overlay::History { sift: Some(_), .. })) {
-        return history_sift_key(state, key);
-    }
-
     match key {
-        Key::Char('q') => return quit(state),
-        Key::Enter => {
-            append(state);
-            return Vec::new();
-        }
-        Key::Escape => {
-            escape(state);
-            return Vec::new();
-        }
-        _ => {}
-    }
-
-    let last = state.history().len();
-    let height = state.geometry.history_rows();
-    let Some(Overlay::History { cursor, sift }) = &mut state.overlay else {
-        return Vec::new();
-    };
-
-    match key {
-        Key::Char('j') | Key::Down => cursor.down(last),
-        Key::Char('k') | Key::Up => cursor.up(),
-        Key::PageDown => cursor.page_down(last, height),
-        Key::PageUp => cursor.page_up(height),
-        Key::Home => cursor.to_start(),
-        Key::End => cursor.to_end(last),
-        Key::Char('/') => *sift = Some(Sift::opened(cursor.index())),
-        _ => {}
-    }
-
-    Vec::new()
-}
-
-/// `⏎` closes the prompt and does not load: the cursor's row may not be the one
-/// being narrowed to.
-fn history_sift_key(state: &mut State, key: Key) -> Vec<Effect> {
-    if matches!(key, Key::Escape) {
-        escape(state);
-        return Vec::new();
-    }
-
-    let labels = history_labels(state);
-    let Some(Overlay::History { cursor, sift }) = &mut state.overlay else {
-        return Vec::new();
-    };
-    let Some(open) = sift else {
-        return Vec::new();
-    };
-
-    match key {
-        Key::Char(character) => open.push(character),
-        Key::Backspace => {
-            if !open.pop() {
-                *sift = None;
-                return Vec::new();
+        Key::Enter => append(state),
+        Key::Escape => escape(state),
+        Key::Up | Key::Down | Key::PageUp | Key::PageDown => move_cursor(state, key),
+        Key::Char(_)
+        | Key::Backspace
+        | Key::Delete
+        | Key::Left
+        | Key::Right
+        | Key::Home
+        | Key::End => {
+            if let Some(Overlay::History(picker)) = &mut state.overlay {
+                let before = picker.query.text().to_owned();
+                edit_line(&mut picker.query, key);
+                if picker.query.text() != before {
+                    picker.cursor.to_start();
+                }
             }
         }
-        Key::Enter => {
-            let at = picker_matches(&labels, open.search().as_ref())
-                .get(cursor.index())
-                .copied()
-                .unwrap_or_else(|| open.origin());
-            *sift = None;
-            cursor.go_to(at, labels.len());
-            return Vec::new();
-        }
-        _ => return Vec::new(),
+        _ => {}
     }
 
-    let origin = open.origin();
-    let matches = picker_matches(&labels, open.search().as_ref());
-    let seat = matches
-        .iter()
-        .position(|at| *at >= origin)
-        .unwrap_or_else(|| matches.len().saturating_sub(1));
-    cursor.go_to(seat, matches.len());
-
     Vec::new()
+}
+
+fn move_cursor(state: &mut State, key: Key) {
+    let Some(Overlay::History(picker)) = &state.overlay else {
+        return;
+    };
+    let len = listed(state, picker.layer, picker.query.text()).len();
+    let height = state.geometry.history_rows();
+    let Some(Overlay::History(picker)) = &mut state.overlay else {
+        return;
+    };
+    let cursor = &mut picker.cursor;
+
+    match key {
+        Key::Down => cursor.down(len),
+        Key::Up => cursor.up(),
+        Key::PageDown => cursor.page_down(len, height),
+        Key::PageUp => cursor.page_up(height),
+        _ => {}
+    }
 }
 
 /// Appends, not runs: `ctrl-x` is the one key that sends.
 fn append(state: &mut State) {
-    let labels = history_labels(state);
-    let Some(Overlay::History { cursor, sift }) = &state.overlay else {
+    let Some(Overlay::History(picker)) = &state.overlay else {
         return;
     };
-    let search = sift.as_ref().and_then(Sift::search);
-    let Some(entry) = picker_matches(&labels, search.as_ref())
-        .get(cursor.index())
-        .copied()
-        .and_then(|at| state.history().get(at))
-        .cloned()
+    let Some(statement) = listed(state, picker.layer, picker.query.text())
+        .get(picker.cursor.index())
+        .map(|ranked| ranked.recalled.entry.statement.clone())
     else {
         return;
     };
 
     state.overlay = None;
-    state.queries.append(&entry.statement);
+    state.queries.append(&statement);
 }

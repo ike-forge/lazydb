@@ -111,7 +111,7 @@ fn overlay_bar(state: &State) -> Option<HintBar> {
         Overlay::Commands(_) => fixed(&[], PALETTE_GLOBAL),
         Overlay::Themes { .. } => fixed(THEMES, THEMES_GLOBAL),
         Overlay::Connections { .. } => connections_bar(state),
-        Overlay::History { .. } => fixed(HISTORY, HISTORY_GLOBAL),
+        Overlay::History(_) => fixed(HISTORY, HISTORY_GLOBAL),
         Overlay::Diagnostics(_) => fixed(&[], DIAGNOSTICS_GLOBAL),
         Overlay::Inspect(inspector) => inspect_bar(state, inspector),
         Overlay::Commit(_) => fixed(&[], COMMIT),
@@ -162,7 +162,7 @@ fn panel_bar(state: &State) -> HintBar {
     }
     if state.focus() == Panel::Queries
         && state.queries.tab() == QueriesTab::Sql
-        && !state.history().is_empty()
+        && !state.histories.is_empty()
         && state.geometry.history_rows() > 0
     {
         panel.push(rendered(&HISTORY_HINT));
@@ -317,11 +317,7 @@ fn export_bar(form: &ExportForm) -> HintBar {
 fn sifting(state: &State) -> bool {
     match &state.overlay {
         Some(Overlay::Commands(panel)) => panel.sift().is_some(),
-        Some(
-            Overlay::Themes { sift, .. }
-            | Overlay::Connections { sift, .. }
-            | Overlay::History { sift, .. },
-        ) => sift.is_some(),
+        Some(Overlay::Themes { sift, .. } | Overlay::Connections { sift, .. }) => sift.is_some(),
         _ => false,
     }
 }

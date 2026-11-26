@@ -84,10 +84,12 @@ pub(super) const CONNECTIONS_GLOBAL: &[Binding] = &[Binding::new(&[ENTER], "conn
 /// Last of the panel's hints, so a narrow bar drops it before `run`.
 pub(super) const HISTORY_HINT: Binding = Binding::new(&[ctrl('r')], "history");
 
-pub(super) const HISTORY: &[Binding] = &[SEARCH];
+/// Typing is the search, so no `/`.
+pub(super) const HISTORY: &[Binding] = &[Binding::new(&[ctrl('r')], "layer")];
 
-/// `⏎` appends and runs nothing, the difference from `ctrl-x` worth saying.
-pub(super) const HISTORY_GLOBAL: &[Binding] = &[Binding::new(&[ENTER], "append"), CLOSE, QUIT];
+/// `⏎` appends and runs nothing, the difference from `ctrl-x` worth saying. No
+/// `q`: it is a letter of the query.
+pub(super) const HISTORY_GLOBAL: &[Binding] = &[Binding::new(&[ENTER], "append"), CLOSE];
 
 /// Two sets: the spellings answer different keys. No `q`: `drop_key` claims it.
 pub(super) const DROP_YES_NO: &[Binding] = &[Binding::new(&[key('y')], "drop it"), NO];

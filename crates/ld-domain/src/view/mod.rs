@@ -1,6 +1,8 @@
 //! The domain's projection of itself for a renderer, rebuilt every frame
 //! (architecture.md §3).
 
+use std::ops::Range;
+
 mod contents;
 mod details;
 pub(crate) mod hints;
@@ -21,10 +23,12 @@ pub use crate::editor::Position;
 
 use crate::commands::{self, CommandRow};
 use crate::config::{Config, ConnectionConfig, Diagnostic};
+use crate::connection::ConnectionState;
 use crate::contents::SelectionMode;
 use crate::ddl::StructureTab;
 use crate::drop::Answer;
 use crate::export::{Confirm, Format, Scope, Stop};
+use crate::history::{Layer, Picker};
 use crate::inspect::Strip;
 use crate::overlay::{Message, Overlay};
 use crate::panel::Panel;
@@ -36,7 +40,6 @@ use crate::sql::{CandidateKind, Completion};
 use crate::state::State;
 use crate::style::{Severity, Token};
 use crate::theme::ThemeChoice;
-use crate::viewport::Cursor;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewModel {
@@ -98,13 +101,9 @@ pub enum OverlayView {
         /// `None` without `$XDG_CONFIG_HOME` or `$HOME`.
         config_home: Option<String>,
     },
-    /// Only the rows a sift left: the block is sized from the frame, not its
-    /// rows.
-    History {
-        labels: Vec<String>,
-        selected: usize,
-        sift: Option<SiftView>,
-    },
+    /// Only the rows the query left; `total` is the layer's size before it, so
+    /// typing does not resize the block.
+    History(HistoryView),
     Diagnostics {
         rows: Vec<DiagnosticRow>,
         selected: usize,
@@ -294,18 +293,71 @@ fn connection_row(config: &Config, connection: &ConnectionConfig) -> ConnectionR
     }
 }
 
-fn history_view(state: &State, cursor: Cursor, sift: Option<&Sift>) -> OverlayView {
-    let labels = crate::update::history_labels(state);
-    let search = sift.and_then(Sift::search);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryView {
+    pub rows: Vec<HistoryRow>,
+    pub selected: usize,
+    pub total: usize,
+    pub layer: Layer,
+    /// Each of [`Layer::ALL`] as this session names it: the connection, the
+    /// engine, `all`.
+    pub layers: [String; 3],
+    pub query: String,
+    /// In characters.
+    pub caret: usize,
+}
 
-    OverlayView::History {
-        labels: crate::update::picker_matches(&labels, search.as_ref())
-            .into_iter()
-            .map(|at| labels[at].clone())
-            .collect(),
-        selected: cursor.index(),
-        sift: sift.map(sift_view),
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryRow {
+    /// Empty for an entry from before times were kept.
+    pub age: String,
+    /// The connection in the wider layers; the database, if any, in the
+    /// connection's own.
+    pub place: String,
+    pub statement: String,
+    /// The query's hits in `statement`, as byte ranges.
+    pub matched: Vec<Range<usize>>,
+}
+
+fn history_view(state: &State, picker: &Picker) -> OverlayView {
+    let rows = crate::update::listed(state, picker.layer, picker.query.text())
+        .into_iter()
+        .map(|ranked| HistoryRow {
+            age: ranked
+                .recalled
+                .entry
+                .at
+                .map(|at| at.age(state.now))
+                .unwrap_or_default(),
+            place: match picker.layer {
+                Layer::Connection => ranked.recalled.entry.database.clone().unwrap_or_default(),
+                Layer::Engine | Layer::All => ranked.recalled.connection.as_str().to_owned(),
+            },
+            statement: ranked.label,
+            matched: ranked.ranges,
+        })
+        .collect();
+    let connection = match &state.connection {
+        ConnectionState::Connected(connection) => connection.name.as_str().to_owned(),
+        ConnectionState::Unchosen
+        | ConnectionState::Disconnected
+        | ConnectionState::Connecting { .. }
+        | ConnectionState::Failed(_) => "connection".to_owned(),
+    };
+
+    OverlayView::History(HistoryView {
+        rows,
+        selected: picker.cursor.index(),
+        total: crate::update::listed(state, picker.layer, "").len(),
+        layer: picker.layer,
+        layers: [
+            connection,
+            state.queries.engine().label().to_owned(),
+            "all".to_owned(),
+        ],
+        query: picker.query.text().to_owned(),
+        caret: picker.query.cursor(),
+    })
 }
 
 fn overlay(state: &State) -> Option<OverlayView> {
@@ -339,7 +391,7 @@ fn overlay(state: &State) -> Option<OverlayView> {
                 sift: sift.as_ref().map(sift_view),
             })
         }
-        Overlay::History { cursor, sift } => Some(history_view(state, *cursor, sift.as_ref())),
+        Overlay::History(picker) => Some(history_view(state, picker)),
         Overlay::Connections { cursor, sift } => {
             let names = crate::update::connection_names(&state.config);
             let search = sift.as_ref().and_then(Sift::search);
