@@ -1,6 +1,5 @@
 //! Key dispatch; an overlay claims a press before the focused panel does.
 
-use crate::connection::ConnectionState;
 use crate::contents::{Filter, SelectionMode};
 use crate::line::Line;
 use crate::model::{Key, KeyPress};
@@ -15,7 +14,8 @@ use crate::theme::BuiltIn;
 
 use super::commit::{commit_extent, commit_inspected_row, commit_key, discard_key, open_commit};
 use super::connections::{
-    cancel_connecting, connections_key, failed_key, offer_connections, open_connections,
+    cancel_connecting, connections_key, failed_key, nothing_behind, offer_connections,
+    open_connections,
 };
 use super::drop::{drop_key, open_drop};
 use super::export::{cancel_pending_export, export_chord, export_key, open_export};
@@ -364,14 +364,12 @@ pub(super) fn dismiss_overlay(state: &mut State) -> bool {
             state.overlay = Some(Overlay::Connections { cursor, sift: None });
             true
         }
-        // `Disconnected`, not `Unchosen`, so `offer_connections` does not
-        // reopen it.
-        Some(Overlay::Connections { .. }) => {
-            if matches!(state.connection, ConnectionState::Unchosen) {
-                state.connection = ConnectionState::Disconnected;
-            }
+        // A click must not quit: only `esc` and `q` leave the app from here.
+        Some(picker @ Overlay::Connections { .. }) if nothing_behind(state) => {
+            state.overlay = Some(picker);
             true
         }
+        Some(Overlay::Connections { .. }) => true,
         // One rung: a click spends itself on the topmost thing.
         Some(Overlay::Inspect(mut inspector))
             if inspector.message().is_some() || inspector.is_searching() =>

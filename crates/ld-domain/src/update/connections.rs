@@ -33,6 +33,17 @@ pub(super) fn default_connection_index(config: &Config) -> Option<usize> {
         .position(|connection| connection.name == *name)
 }
 
+/// Neither connected nor connecting: the panels have nothing to show, so
+/// leaving the picker is leaving the app.
+pub(crate) fn nothing_behind(state: &State) -> bool {
+    match state.connection {
+        ConnectionState::Connected(_) | ConnectionState::Connecting { .. } => false,
+        ConnectionState::Unchosen | ConnectionState::Disconnected | ConnectionState::Failed(_) => {
+            true
+        }
+    }
+}
+
 /// An empty picker opens whatever the room: it explains the empty panels.
 pub(super) fn open_connections(state: &mut State) {
     let last = state.config.connections.len();
@@ -65,6 +76,7 @@ pub(super) fn connections_key(state: &mut State, key: Key) -> Vec<Effect> {
 
     match key {
         Key::Char('q') => return quit(state),
+        Key::Escape if nothing_behind(state) => return quit(state),
         Key::Enter => return choose_connection(state),
         // The bar names no `/` on an empty picker.
         Key::Char('/') if state.config.connections.is_empty() => return Vec::new(),

@@ -81,6 +81,12 @@ pub(super) const CONNECTIONS: &[Binding] = &[SEARCH];
 
 pub(super) const CONNECTIONS_GLOBAL: &[Binding] = &[Binding::new(&[ENTER], "connect"), CLOSE, QUIT];
 
+/// With no connection behind the picker, `esc` leaves the app as `q` does.
+pub(super) const CONNECTIONS_ALONE: &[Binding] = &[
+    Binding::new(&[ENTER], "connect"),
+    Binding::new(&[ESC, key('q')], "quit"),
+];
+
 /// Last of the panel's hints, so a narrow bar drops it before `run`.
 pub(super) const HISTORY_HINT: Binding = Binding::new(&[ctrl('r')], "history");
 

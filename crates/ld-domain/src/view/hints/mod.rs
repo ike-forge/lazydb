@@ -8,9 +8,9 @@ mod tests;
 
 use bindings::{
     ABORT, CANCEL, CLEAR, CLEAR_FILTER, CLOSE, COMMIT, COMMIT_HINT, COMMIT_ROW, COMPLETE,
-    CONNECTIONS, CONNECTIONS_GLOBAL, COPY, COPY_LINE, DELETE, DELETE_TYPED, DELETE_YES_NO,
-    DIAGNOSTICS_GLOBAL, DISCARD, DONE, DROP, DROP_TYPED, DROP_YES_NO, EDIT, ENTER, EVERY_PAGE,
-    EXPORT, EXPORT_COPY, EXPORT_OVERWRITE, EXPORT_ROWS, FIELD, FILTER, FORMAT, HISTORY,
+    CONNECTIONS, CONNECTIONS_ALONE, CONNECTIONS_GLOBAL, COPY, COPY_LINE, DELETE, DELETE_TYPED,
+    DELETE_YES_NO, DIAGNOSTICS_GLOBAL, DISCARD, DONE, DROP, DROP_TYPED, DROP_YES_NO, EDIT, ENTER,
+    EVERY_PAGE, EXPORT, EXPORT_COPY, EXPORT_OVERWRITE, EXPORT_ROWS, FIELD, FILTER, FORMAT, HISTORY,
     HISTORY_GLOBAL, HISTORY_HINT, INSERT, INSERT_ROW, INSPECT_GLOBAL, INSPECT_ROW, LEAVE, MODE,
     MOVE, NEXT_MATCH, NEXT_OPTION, NEXT_PAGE, NULL, PALETTE_GLOBAL, REFRESH, RUN, SAVE, SAVE_HINT,
     SAVE_OVERWRITE, SEARCH, SEARCH_GLOBAL, SELECT, SORT, STOP, TOGGLE, UNSET,
@@ -215,11 +215,15 @@ fn connections_bar(state: &State) -> HintBar {
         } else {
             Vec::new()
         },
-        global: CONNECTIONS_GLOBAL
-            .iter()
-            .filter(|binding| listed || !binding.keys.contains(&ENTER))
-            .map(rendered)
-            .collect(),
+        global: if crate::update::nothing_behind(state) {
+            CONNECTIONS_ALONE
+        } else {
+            CONNECTIONS_GLOBAL
+        }
+        .iter()
+        .filter(|binding| listed || !binding.keys.contains(&ENTER))
+        .map(rendered)
+        .collect(),
         export: None,
     }
 }

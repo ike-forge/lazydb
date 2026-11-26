@@ -81,19 +81,50 @@ fn enter_on_the_picker_connects_to_the_row_under_the_cursor() {
 }
 
 #[test]
-fn a_dismissed_picker_is_not_offered_again() {
+fn esc_on_the_picker_with_nothing_connected_quits() {
+    for connection in [ConnectionState::Unchosen, ConnectionState::Disconnected] {
+        let mut state = started_on(config_of(&["prod"]));
+        state.connection = connection;
+
+        let effects = press(&mut state, Key::Escape);
+
+        assert!(effects.contains(&Effect::Quit));
+        assert!(state.should_quit);
+    }
+}
+
+#[test]
+fn an_empty_picker_quits_on_esc_too() {
+    let mut state = started_on(Config::default());
+
+    assert!(press(&mut state, Key::Escape).contains(&Effect::Quit));
+}
+
+#[test]
+fn a_click_beside_the_picker_with_nothing_connected_keeps_it() {
     let mut state = started_on(config_of(&["prod"]));
 
-    press(&mut state, Key::Escape);
-    assert!(state.overlay.is_none());
-    assert!(matches!(state.connection, ConnectionState::Disconnected));
-
-    update(&mut state, Msg::Measured(roomy().with_grid_width(40)));
-
-    assert!(
-        state.overlay.is_none(),
-        "a measurement must not resurrect a picker the user waved away"
+    update(
+        &mut state,
+        Msg::Pointer(Pointer::Click(Click::Panel(Panel::Objects))),
     );
+
+    assert!(connection_picker(&state).is_some());
+    assert!(!state.should_quit);
+}
+
+#[test]
+fn esc_on_the_picker_over_a_live_connection_only_closes_it() {
+    let mut state = editing("");
+    state.geometry = roomy();
+    open_connections(&mut state);
+    assert!(connection_picker(&state).is_some());
+
+    let effects = press(&mut state, Key::Escape);
+
+    assert!(effects.is_empty());
+    assert!(state.overlay.is_none());
+    assert!(!state.should_quit);
 }
 
 #[test]

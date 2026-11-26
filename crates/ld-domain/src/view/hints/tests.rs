@@ -232,7 +232,7 @@ fn the_bar_names_what_the_picker_responds_to() {
 
 #[test]
 fn the_connection_pickers_bar_names_connect_and_teaches_no_motion() {
-    let mut state = State::default();
+    let mut state = connected(Posture::ReadOnly, SchemaState::Loading);
     state.config.connections = vec![connection()];
     state.overlay = Some(Overlay::Connections {
         cursor: Cursor::default(),
@@ -255,6 +255,25 @@ fn the_connection_pickers_bar_names_connect_and_teaches_no_motion() {
             .map(|hint| (hint.keys.as_str(), hint.action))
             .collect::<Vec<_>>(),
         [("⏎", "connect"), ("esc", "close"), ("q", "quit")]
+    );
+}
+
+#[test]
+fn with_nothing_connected_the_pickers_esc_quits() {
+    let mut state = State::default();
+    state.config.connections = vec![connection()];
+    state.overlay = Some(Overlay::Connections {
+        cursor: Cursor::default(),
+        sift: None,
+    });
+
+    assert_eq!(
+        bar(&state)
+            .global
+            .iter()
+            .map(|hint| (hint.keys.as_str(), hint.action))
+            .collect::<Vec<_>>(),
+        [("⏎", "connect"), ("esc/q", "quit")]
     );
 }
 
@@ -283,8 +302,8 @@ fn an_empty_connection_picker_names_neither_search_nor_connect() {
             .iter()
             .map(|hint| (hint.keys.as_str(), hint.action))
             .collect::<Vec<_>>(),
-        [("esc", "close"), ("q", "quit")],
-        "the two ways out are all that is true of an empty picker"
+        [("esc/q", "quit")],
+        "the way out is all that is true of an empty picker"
     );
 }
 

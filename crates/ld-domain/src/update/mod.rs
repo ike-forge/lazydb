@@ -70,7 +70,7 @@ use themes::{restore_theme, theme_save_failed};
 use visual::{axes, clear_selection, collapse_selection, spanned, stop_extending, toggle_visual};
 use yank::copied;
 
-pub(crate) use connections::connection_names;
+pub(crate) use connections::{connection_names, nothing_behind};
 pub(crate) use drop::drop_target;
 pub(crate) use edit::{editable_here, has_uncommitted, nullable_here};
 pub(crate) use history::listed;
