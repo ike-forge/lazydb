@@ -477,4 +477,17 @@ mod tests {
         };
         assert!(reason.contains("saved.toml"), "{reason}");
     }
+
+    #[tokio::test]
+    async fn a_buffer_that_could_not_be_written_is_not_called_history() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = StoreError::Unavailable("/home/x/buffers.toml: permission denied".to_owned());
+
+        save_buffer(tx, Arc::new(Disk(Err(error))), name(), String::new()).await;
+
+        let Some(Incoming::Msg(Msg::BufferSaveFailed { reason })) = rx.recv().await else {
+            panic!("a lost save is worth one line");
+        };
+        assert_eq!(reason, "not saved: /home/x/buffers.toml: permission denied");
+    }
 }

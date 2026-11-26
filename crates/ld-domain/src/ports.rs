@@ -126,7 +126,8 @@ pub enum ConfigWriteError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
-    #[error("history could not be saved: {0}")]
+    /// Shared by every file the store writes; the log line names which.
+    #[error("not saved: {0}")]
     Unavailable(String),
 }
 
