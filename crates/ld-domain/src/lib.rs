@@ -18,6 +18,7 @@ pub mod editor;
 pub mod engine;
 pub mod export;
 pub mod feedback;
+pub mod fuzzy;
 pub mod geometry;
 pub mod grid;
 pub mod history;
