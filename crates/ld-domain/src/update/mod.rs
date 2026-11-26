@@ -180,7 +180,7 @@ pub enum Effect {
     /// The whole list: a save replaces, so a lost one is repaired by the next.
     SaveHistory {
         connection: ConnectionName,
-        entries: Vec<String>,
+        entries: Vec<crate::history::Entry>,
     },
     /// Run on the main loop rather than as a task: the editor needs the
     /// terminal.

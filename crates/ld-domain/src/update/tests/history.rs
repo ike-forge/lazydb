@@ -29,6 +29,14 @@ fn run_query(state: &mut State) -> Vec<Effect> {
     ctrl(state, Key::Char('x'))
 }
 
+fn statements(state: &State) -> Vec<&str> {
+    state
+        .history()
+        .iter()
+        .map(|entry| entry.statement.as_str())
+        .collect()
+}
+
 fn buffer(state: &State) -> String {
     state.queries.text()
 }
@@ -37,7 +45,7 @@ fn buffer(state: &State) -> String {
 fn a_statement_run_from_the_buffer_is_remembered() {
     let state = having_run(&["SELECT 1;", "SELECT 2;"]);
 
-    assert_eq!(state.history(), ["SELECT 2;", "SELECT 1;"]);
+    assert_eq!(statements(&state), ["SELECT 2;", "SELECT 1;"]);
 }
 
 #[test]
@@ -63,14 +71,19 @@ fn the_configured_limit_bounds_what_is_kept() {
         run_query(&mut state);
     }
 
-    assert_eq!(state.history(), ["SELECT 3;", "SELECT 2;"]);
+    assert_eq!(statements(&state), ["SELECT 3;", "SELECT 2;"]);
 }
 
-fn saves(effects: &[Effect]) -> Vec<&Vec<String>> {
+fn saves(effects: &[Effect]) -> Vec<Vec<&str>> {
     effects
         .iter()
         .filter_map(|effect| match effect {
-            Effect::SaveHistory { entries, .. } => Some(entries),
+            Effect::SaveHistory { entries, .. } => Some(
+                entries
+                    .iter()
+                    .map(|entry| entry.statement.as_str())
+                    .collect(),
+            ),
             _ => None,
         })
         .collect()
@@ -84,10 +97,7 @@ fn a_run_saves_the_whole_list_for_its_connection() {
 
     let effects = run_query(&mut state);
 
-    assert_eq!(
-        saves(&effects),
-        [&vec!["SELECT 2;".to_owned(), "SELECT 1;".to_owned()]]
-    );
+    assert_eq!(saves(&effects), [vec!["SELECT 2;", "SELECT 1;"]]);
     assert!(effects.iter().any(|effect| matches!(
         effect,
         Effect::SaveHistory { connection, .. } if connection.as_str() == "local"

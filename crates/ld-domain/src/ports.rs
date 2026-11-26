@@ -8,10 +8,10 @@ use async_trait::async_trait;
 
 use crate::config::{
     ClipboardMb, Config, ConnectionConfig, ConnectionName, Credential, Diagnostic, DriverConfig,
-    HistoryLimit, PageSize,
+    PageSize,
 };
 use crate::connection::Transaction;
-use crate::history::Histories;
+use crate::history::{Entry, Histories};
 use crate::model::{Catalog, ConnId, DbError, Page, PagingState, Statement};
 use crate::posture::Posture;
 use crate::theme::ThemeChoice;
@@ -62,11 +62,12 @@ pub trait SecretResolver: Send + Sync {
 
 #[async_trait]
 pub trait Store: Send + Sync {
-    /// Never fails, as [`ConfigSource::load`].
-    async fn load(&self, limit: HistoryLimit) -> (Histories, Vec<Diagnostic>);
+    /// Never fails, as [`ConfigSource::load`]. `config` bounds each list and
+    /// places an entry from an older file, which names no engine, on its
+    /// connection's.
+    async fn load(&self, config: &Config) -> (Histories, Vec<Diagnostic>);
 
-    async fn save(&self, connection: &ConnectionName, entries: &[String])
-    -> Result<(), StoreError>;
+    async fn save(&self, connection: &ConnectionName, entries: &[Entry]) -> Result<(), StoreError>;
 }
 
 /// Refusing to overwrite is this port's job: a separate `exists` call would

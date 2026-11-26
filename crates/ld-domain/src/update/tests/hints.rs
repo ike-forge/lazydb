@@ -313,7 +313,7 @@ fn editor_fixture() -> State {
     // `ctrl-r` needs a history to open.
     editor.histories.record(
         &crate::config::ConnectionName::try_new("local").expect("a valid name"),
-        "SELECT 1;",
+        crate::history::Entry::bare("SELECT 1;", crate::Engine::Postgres),
         editor.config.history.limit,
     );
     // Off the end by one, so `Home`, `End` and `Delete` have somewhere to move

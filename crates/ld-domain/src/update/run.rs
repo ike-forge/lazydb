@@ -1,5 +1,6 @@
 use crate::connection::{ConnectionState, Transaction};
 use crate::contents::{ContentsState, Continue, Failure, Landed, Subject, TableRef};
+use crate::history::Entry;
 use crate::log::{Outcome, Trace};
 use crate::model::{ConnId, DbError, Page, QueryId, Statement};
 use crate::overlay::Message;
@@ -260,10 +261,19 @@ pub(super) fn record_history(state: &mut State, sql: &str) -> Option<Effect> {
         return None;
     };
     let name = connection.name.clone();
+    let entry = Entry {
+        statement: sql.to_owned(),
+        at: Some(state.now),
+        engine: state.engine(),
+        database: state
+            .schema()
+            .and_then(|catalog| catalog.server.as_ref())
+            .map(|server| server.current.clone()),
+    };
 
     state
         .histories
-        .record(&name, sql, state.config.history.limit)
+        .record(&name, entry, state.config.history.limit)
         .then(|| Effect::SaveHistory {
             entries: state.histories.of(&name).to_vec(),
             connection: name,

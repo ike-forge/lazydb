@@ -146,7 +146,7 @@ impl State {
     }
 
     #[must_use]
-    pub fn history(&self) -> &[String] {
+    pub fn history(&self) -> &[crate::history::Entry] {
         match &self.connection {
             ConnectionState::Connected(connection) => self.histories.of(&connection.name),
             ConnectionState::Unchosen

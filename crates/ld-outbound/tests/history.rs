@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
-use ld_domain::config::{ConnectionName, HistoryLimit};
+use ld_domain::Engine;
+use ld_domain::clock::Stamp;
+use ld_domain::config::{Config, ConnectionName, HistoryConfig, HistoryLimit};
+use ld_domain::history::{Entry, Histories};
 use ld_domain::ports::Store;
 use ld_outbound::history::FileStore;
 
@@ -24,12 +27,32 @@ fn name(name: &str) -> ConnectionName {
 }
 
 #[allow(clippy::expect_used, reason = "see scratch")]
-fn limit(rows: u32) -> HistoryLimit {
-    HistoryLimit::try_new(rows).expect("in range")
+fn keeping(rows: u32) -> Config {
+    Config {
+        history: HistoryConfig {
+            limit: HistoryLimit::try_new(rows).expect("in range"),
+        },
+        ..Config::default()
+    }
 }
 
-fn entries(of: &[&str]) -> Vec<String> {
-    of.iter().map(|entry| (*entry).to_owned()).collect()
+fn entries(of: &[&str]) -> Vec<Entry> {
+    (1_764_153_015..)
+        .zip(of)
+        .map(|(seconds, statement)| Entry {
+            at: Some(Stamp::from_unix(seconds)),
+            database: Some("shop".to_owned()),
+            ..Entry::bare(statement, Engine::Postgres)
+        })
+        .collect()
+}
+
+fn statements<'a>(histories: &'a Histories, connection: &str) -> Vec<&'a str> {
+    histories
+        .of(&name(connection))
+        .iter()
+        .map(|entry| entry.statement.as_str())
+        .collect()
 }
 
 #[tokio::test]
@@ -42,10 +65,13 @@ async fn what_one_run_saves_the_next_loads() {
         .await
         .expect("the first save creates the directory and the file");
 
-    let (histories, diagnostics) = FileStore::at(Some(path)).load(limit(100)).await;
+    let (histories, diagnostics) = FileStore::at(Some(path)).load(&keeping(100)).await;
 
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
-    assert_eq!(histories.of(&name("dev")), ["SELECT 2;", "SELECT\n1;"]);
+    assert_eq!(
+        histories.of(&name("dev")),
+        entries(&["SELECT 2;", "SELECT\n1;"])
+    );
 }
 
 #[tokio::test]
@@ -66,10 +92,10 @@ async fn saving_one_connection_leaves_the_others_alone() {
         .await
         .expect("saved");
 
-    let (histories, _) = store.load(limit(100)).await;
+    let (histories, _) = store.load(&keeping(100)).await;
 
-    assert_eq!(histories.of(&name("dev")), ["SELECT 3;"]);
-    assert_eq!(histories.of(&name("prod")), ["SELECT 2;"]);
+    assert_eq!(statements(&histories, "dev"), ["SELECT 3;"]);
+    assert_eq!(statements(&histories, "prod"), ["SELECT 2;"]);
 }
 
 #[tokio::test]
@@ -84,16 +110,49 @@ async fn a_lower_limit_trims_on_load() {
         .await
         .expect("saved");
 
-    let (histories, _) = store.load(limit(2)).await;
+    let (histories, _) = store.load(&keeping(2)).await;
 
-    assert_eq!(histories.of(&name("dev")), ["SELECT 3;", "SELECT 2;"]);
+    assert_eq!(statements(&histories, "dev"), ["SELECT 3;", "SELECT 2;"]);
+}
+
+#[tokio::test]
+async fn a_file_from_before_entries_had_times_loads_and_is_rewritten_in_the_new_form() {
+    let path = scratch("history-bare").join("history.toml");
+    std::fs::write(
+        &path,
+        "[connections.dev]\nentries = [\"SELECT 2;\", \"SELECT 1;\"]\n",
+    )
+    .expect("an older file");
+    let store = FileStore::at(Some(path.clone()));
+
+    let (histories, diagnostics) = store.load(&keeping(100)).await;
+
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(
+        histories.of(&name("dev")),
+        [
+            Entry::bare("SELECT 2;", Engine::Postgres),
+            Entry::bare("SELECT 1;", Engine::Postgres)
+        ]
+    );
+
+    store
+        .save(&name("dev"), histories.of(&name("dev")))
+        .await
+        .expect("saved");
+    let rewritten = std::fs::read_to_string(&path).expect("written");
+
+    assert!(
+        rewritten.contains("{ engine = \"postgres\", statement = \"SELECT 2;\" },"),
+        "{rewritten}"
+    );
 }
 
 #[tokio::test]
 async fn no_file_yet_is_an_empty_history_and_no_complaint() {
     let path = scratch("history-absent").join("history.toml");
 
-    let (histories, diagnostics) = FileStore::at(Some(path)).load(limit(100)).await;
+    let (histories, diagnostics) = FileStore::at(Some(path)).load(&keeping(100)).await;
 
     assert!(histories.of(&name("dev")).is_empty());
     assert!(diagnostics.is_empty());
@@ -105,7 +164,7 @@ async fn a_file_that_is_not_toml_is_reported_and_replaced_by_the_next_save() {
     std::fs::write(&path, "[connections.dev\nentries = ").expect("a corrupt file");
     let store = FileStore::at(Some(path.clone()));
 
-    let (histories, diagnostics) = store.load(limit(100)).await;
+    let (histories, diagnostics) = store.load(&keeping(100)).await;
 
     assert!(histories.of(&name("dev")).is_empty());
     assert_eq!(diagnostics.len(), 1);
@@ -115,10 +174,10 @@ async fn a_file_that_is_not_toml_is_reported_and_replaced_by_the_next_save() {
         .save(&name("dev"), &entries(&["SELECT 1;"]))
         .await
         .expect("a corrupt file does not block a save");
-    let (histories, diagnostics) = store.load(limit(100)).await;
+    let (histories, diagnostics) = store.load(&keeping(100)).await;
 
     assert!(diagnostics.is_empty());
-    assert_eq!(histories.of(&name("dev")), ["SELECT 1;"]);
+    assert_eq!(statements(&histories, "dev"), ["SELECT 1;"]);
 }
 
 #[tokio::test]
@@ -131,7 +190,7 @@ async fn with_nowhere_to_write_a_save_fails_and_a_load_is_empty() {
             .await
             .is_err()
     );
-    assert!(store.load(limit(100)).await.1.is_empty());
+    assert!(store.load(&keeping(100)).await.1.is_empty());
 }
 
 #[cfg(unix)]

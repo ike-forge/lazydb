@@ -9,8 +9,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use ld_domain::config::{ConnectionName, Diagnostic, HistoryLimit, Origin};
-use ld_domain::history::Histories;
+use ld_domain::clock::Stamp;
+use ld_domain::config::{Config, ConnectionName, Diagnostic, Origin};
+use ld_domain::engine::Engine;
+use ld_domain::history::{Entry, Histories};
 use ld_domain::ports::{Store, StoreError};
 use ld_domain::style::Severity;
 use serde::Deserialize;
@@ -38,10 +40,54 @@ struct File {
 #[derive(Debug, Default, Deserialize)]
 struct Section {
     #[serde(default)]
-    entries: Vec<String>,
+    entries: Vec<Wire>,
 }
 
-type Sections = BTreeMap<String, Vec<String>>;
+/// Files from before 0.4 hold bare strings.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Wire {
+    Bare(String),
+    Full(Stored),
+}
+
+/// As the file holds it: an engine this build does not know survives a save
+/// by another connection.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct Stored {
+    statement: String,
+    at: Option<u64>,
+    engine: Option<String>,
+    database: Option<String>,
+}
+
+impl Stored {
+    fn of(entry: &Entry) -> Self {
+        Self {
+            statement: entry.statement.clone(),
+            at: entry.at.map(Stamp::unix),
+            engine: Some(entry.engine.key().to_owned()),
+            database: entry.database.clone(),
+        }
+    }
+
+    /// `fallback` for an entry that names no engine, or one this build lacks.
+    fn entry(self, fallback: Engine) -> Entry {
+        let engine = Engine::ALL
+            .into_iter()
+            .find(|engine| self.engine.as_deref() == Some(engine.key()))
+            .unwrap_or(fallback);
+
+        Entry {
+            statement: self.statement,
+            at: self.at.map(Stamp::from_unix),
+            engine,
+            database: self.database,
+        }
+    }
+}
+
+type Sections = BTreeMap<String, Vec<Stored>>;
 
 fn parse(source: &str) -> Result<Sections, String> {
     let file: File = toml::from_str(source).map_err(|error| error.message().to_owned())?;
@@ -49,11 +95,27 @@ fn parse(source: &str) -> Result<Sections, String> {
     Ok(file
         .connections
         .into_iter()
-        .map(|(name, section)| (name, section.entries))
+        .map(|(name, section)| {
+            let entries = section
+                .entries
+                .into_iter()
+                .map(|wire| match wire {
+                    Wire::Bare(statement) => Stored {
+                        statement,
+                        at: None,
+                        engine: None,
+                        database: None,
+                    },
+                    Wire::Full(stored) => stored,
+                })
+                .collect();
+            (name, entries)
+        })
         .collect())
 }
 
-/// Hand-rolled: `toml`'s serialiser is off.
+/// Hand-rolled: `toml`'s serialiser is off. One inline table a line, the
+/// statement last so the metadata lines up.
 fn render(sections: &Sections) -> String {
     let mut out = String::from(HEADER);
 
@@ -62,7 +124,17 @@ fn render(sections: &Sections) -> String {
         let _written = write!(out, "\n[connections.{}]\nentries = [\n", quote(name));
 
         for entry in entries {
-            let _written = writeln!(out, "  {},", quote(entry));
+            out.push_str("  { ");
+            if let Some(at) = entry.at {
+                let _written = write!(out, "at = {at}, ");
+            }
+            if let Some(engine) = &entry.engine {
+                let _written = write!(out, "engine = {}, ", quote(engine));
+            }
+            if let Some(database) = &entry.database {
+                let _written = write!(out, "database = {}, ", quote(database));
+            }
+            let _written = writeln!(out, "statement = {} }},", quote(&entry.statement));
         }
 
         out.push_str("]\n");
@@ -121,7 +193,8 @@ fn warning(path: &Path, message: String) -> Diagnostic {
 
 #[async_trait]
 impl Store for FileStore {
-    async fn load(&self, limit: HistoryLimit) -> (Histories, Vec<Diagnostic>) {
+    async fn load(&self, config: &Config) -> (Histories, Vec<Diagnostic>) {
+        let limit = config.history.limit;
         let mut histories = Histories::default();
         let Some(path) = self.path.as_ref().filter(|_| !limit.is_off()) else {
             return (histories, Vec::new());
@@ -144,9 +217,16 @@ impl Store for FileStore {
         };
         let mut diagnostics = Vec::new();
 
-        for (name, entries) in &sections {
-            match ConnectionName::try_new(name) {
-                Ok(name) => histories.restore(&name, entries, limit),
+        for (name, stored) in sections {
+            match ConnectionName::try_new(&name) {
+                Ok(name) => {
+                    let fallback = engine_of(config, &name);
+                    let entries = stored
+                        .into_iter()
+                        .map(|stored| stored.entry(fallback))
+                        .collect();
+                    histories.restore(&name, entries, limit);
+                }
                 Err(error) => diagnostics.push(warning(
                     path,
                     format!("history for `{name}` ignored: {error}"),
@@ -157,11 +237,7 @@ impl Store for FileStore {
         (histories, diagnostics)
     }
 
-    async fn save(
-        &self,
-        connection: &ConnectionName,
-        entries: &[String],
-    ) -> Result<(), StoreError> {
+    async fn save(&self, connection: &ConnectionName, entries: &[Entry]) -> Result<(), StoreError> {
         let Some(path) = &self.path else {
             return Err(StoreError::Unavailable(
                 "neither XDG_STATE_HOME nor HOME is set".to_owned(),
@@ -177,10 +253,22 @@ impl Store for FileStore {
             .map_err(failed)?
             .and_then(|source| parse(&source).ok())
             .unwrap_or_default();
-        sections.insert(connection.as_str().to_owned(), entries.to_vec());
+        sections.insert(
+            connection.as_str().to_owned(),
+            entries.iter().map(Stored::of).collect(),
+        );
 
         write(path, &render(&sections)).await.map_err(failed)
     }
+}
+
+/// A connection since removed from the config is taken for the default.
+fn engine_of(config: &Config, name: &ConnectionName) -> Engine {
+    config
+        .connections
+        .iter()
+        .find(|connection| connection.name == *name)
+        .map_or_else(Engine::default, ld_domain::config::ConnectionConfig::engine)
 }
 
 /// Beside the target for one filesystem; named after this process so two cannot
@@ -221,14 +309,18 @@ async fn write(path: &Path, contents: &str) -> Result<(), std::io::Error> {
 mod tests {
     use super::*;
 
-    fn sections(of: &[(&str, &[&str])]) -> Sections {
+    fn stored(statement: &str) -> Stored {
+        Stored {
+            statement: statement.to_owned(),
+            at: Some(1_764_153_015),
+            engine: Some("postgres".to_owned()),
+            database: Some("shop".to_owned()),
+        }
+    }
+
+    fn sections(of: &[(&str, &[Stored])]) -> Sections {
         of.iter()
-            .map(|(name, entries)| {
-                (
-                    (*name).to_owned(),
-                    entries.iter().map(|entry| (*entry).to_owned()).collect(),
-                )
-            })
+            .map(|(name, entries)| ((*name).to_owned(), entries.to_vec()))
             .collect()
     }
 
@@ -254,17 +346,40 @@ mod tests {
         let held = sections(&[
             (
                 "dev",
-                &["SELECT 1;", "SELECT *\nFROM \"a\\b\" WHERE x = 'é';"],
+                &[
+                    stored("SELECT 1;"),
+                    stored("SELECT *\nFROM \"a\\b\" WHERE x = 'é';"),
+                ],
             ),
-            ("prod", &["SELECT 2;"]),
+            (
+                "events",
+                &[Stored {
+                    engine: Some("cassandra".to_owned()),
+                    database: None,
+                    ..stored("SELECT 2;")
+                }],
+            ),
         ]);
 
         assert_eq!(parse(&render(&held)), Ok(held));
     }
 
     #[test]
+    fn an_entry_is_one_line_with_its_statement_last() {
+        let rendered = render(&sections(&[("dev", &[stored("SELECT\n1;")])]));
+
+        assert!(
+            rendered.contains(
+                "  { at = 1764153015, engine = \"postgres\", database = \"shop\", \
+                 statement = \"SELECT\\u000A1;\" },\n"
+            ),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn a_connection_with_nothing_is_left_out() {
-        let rendered = render(&sections(&[("dev", &[]), ("prod", &["SELECT 2;"])]));
+        let rendered = render(&sections(&[("dev", &[]), ("prod", &[stored("SELECT 2;")])]));
 
         assert!(!rendered.contains("dev"));
         assert!(rendered.contains("prod"));
@@ -272,7 +387,7 @@ mod tests {
 
     #[test]
     fn a_name_that_needs_quoting_survives() {
-        let held = sections(&[("we\"ird.name", &["SELECT 1;"])]);
+        let held = sections(&[("we\"ird.name", &[stored("SELECT 1;")])]);
 
         assert_eq!(parse(&render(&held)), Ok(held));
     }
@@ -284,8 +399,70 @@ mod tests {
 
     #[test]
     fn keys_nobody_declared_are_ignored() {
-        let source = "future = 1\n[connections.dev]\nentries = [\"SELECT 1;\"]\nextra = true\n";
+        let source = "future = 1\n[connections.dev]\nentries = [\n  \
+                      { at = 1764153015, engine = \"postgres\", database = \"shop\", \
+                      statement = \"SELECT 1;\", took = 3 },\n]\nextra = true\n";
 
-        assert_eq!(parse(source), Ok(sections(&[("dev", &["SELECT 1;"])])));
+        assert_eq!(
+            parse(source),
+            Ok(sections(&[("dev", &[stored("SELECT 1;")])]))
+        );
+    }
+
+    #[test]
+    fn a_file_of_bare_statements_still_loads() {
+        let source = "[connections.dev]\nentries = [\"SELECT 1;\", \"SELECT 2;\"]\n";
+
+        assert_eq!(
+            parse(source),
+            Ok(sections(&[(
+                "dev",
+                &[
+                    Stored {
+                        statement: "SELECT 1;".to_owned(),
+                        at: None,
+                        engine: None,
+                        database: None,
+                    },
+                    Stored {
+                        statement: "SELECT 2;".to_owned(),
+                        at: None,
+                        engine: None,
+                        database: None,
+                    },
+                ],
+            )]))
+        );
+    }
+
+    #[test]
+    fn an_entry_without_a_known_engine_takes_its_connections() {
+        let unnamed = Stored {
+            engine: None,
+            ..stored("SELECT 1;")
+        };
+        let unknown = Stored {
+            engine: Some("oracle".to_owned()),
+            ..stored("SELECT 1;")
+        };
+
+        assert_eq!(unnamed.entry(Engine::Cassandra).engine, Engine::Cassandra);
+        assert_eq!(unknown.entry(Engine::Cassandra).engine, Engine::Cassandra);
+        assert_eq!(
+            stored("SELECT 1;").entry(Engine::Cassandra).engine,
+            Engine::Postgres
+        );
+    }
+
+    #[test]
+    fn an_entry_reads_back_as_it_was_recorded() {
+        let entry = Entry {
+            statement: "SELECT 1;".to_owned(),
+            at: Some(Stamp::from_unix(42)),
+            engine: Engine::Cassandra,
+            database: None,
+        };
+
+        assert_eq!(Stored::of(&entry).entry(Engine::Postgres), entry);
     }
 }

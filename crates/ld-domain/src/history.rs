@@ -1,34 +1,64 @@
 //! What each connection has been asked, newest first. Keyed by name, not
-//! [`ConnId`], so a reconnect keeps it.
+//! [`ConnId`], so a reconnect keeps it. Recalled in three [`Layer`]s.
 //!
 //! [`ConnId`]: crate::model::ConnId
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::clock::Stamp;
 use crate::config::{ConnectionName, HistoryLimit};
 use crate::engine::Engine;
 use crate::sql::fold;
 
+/// One statement as it was run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub statement: String,
+    /// `None` for an entry from a file written before times were kept.
+    pub at: Option<Stamp>,
+    pub engine: Engine,
+    /// The database a Postgres session was scoped to; `None` on an engine
+    /// without databases and in older files.
+    pub database: Option<String>,
+}
+
+impl Entry {
+    /// An entry with nothing but its statement, as older files hold.
+    #[must_use]
+    pub fn bare(statement: &str, engine: Engine) -> Self {
+        Self {
+            statement: statement.to_owned(),
+            at: None,
+            engine,
+            database: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct History {
-    entries: Vec<String>,
+    entries: Vec<Entry>,
 }
 
 impl History {
-    /// A case-only variant of the newest replaces it; a blank statement is
-    /// ignored. `false` when nothing changed, so an exact repeat costs no
-    /// write.
-    pub fn record(&mut self, statement: &str, limit: HistoryLimit) -> bool {
-        let statement = statement.trim();
+    /// A repeat of the newest, case aside, replaces it, so asking again moves
+    /// its time; a blank statement is ignored. `false` when nothing changed,
+    /// so the same statement in the same second costs no write.
+    pub fn record(&mut self, entry: Entry, limit: HistoryLimit) -> bool {
+        let statement = entry.statement.trim();
 
         if limit.is_off() || statement.is_empty() {
             return false;
         }
+        let entry = Entry {
+            statement: statement.to_owned(),
+            ..entry
+        };
 
         match self.entries.first_mut() {
-            Some(newest) if newest == statement => return false,
-            Some(newest) if same(newest, statement) => statement.clone_into(newest),
-            _ => self.entries.insert(0, statement.to_owned()),
+            Some(newest) if *newest == entry => return false,
+            Some(newest) if same(&newest.statement, &entry.statement) => *newest = entry,
+            _ => self.entries.insert(0, entry),
         }
 
         self.entries
@@ -37,9 +67,42 @@ impl History {
     }
 
     #[must_use]
-    pub fn entries(&self) -> &[String] {
+    pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
+}
+
+/// How far back the picker looks, narrowest first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Layer {
+    /// The connected entry's own.
+    #[default]
+    Connection,
+    /// Every connection on the connected entry's engine: the statement run on
+    /// staging, recalled on production.
+    Engine,
+    All,
+}
+
+impl Layer {
+    pub const ALL: [Self; 3] = [Self::Connection, Self::Engine, Self::All];
+
+    /// Wraps, as atuin's `ctrl-r` does.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Connection => Self::Engine,
+            Self::Engine => Self::All,
+            Self::All => Self::Connection,
+        }
+    }
+}
+
+/// An entry and the connection that ran it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Recalled<'a> {
+    pub connection: &'a ConnectionName,
+    pub entry: &'a Entry,
 }
 
 /// Ordered, for determinism.
@@ -50,30 +113,71 @@ impl Histories {
     pub fn record(
         &mut self,
         connection: &ConnectionName,
-        statement: &str,
+        entry: Entry,
         limit: HistoryLimit,
     ) -> bool {
         self.0
             .entry(connection.clone())
             .or_default()
-            .record(statement, limit)
+            .record(entry, limit)
     }
 
     /// Same rules as [`History::record`], so a hand-edited file still yields a
     /// valid list.
-    pub fn restore(&mut self, connection: &ConnectionName, stored: &[String], limit: HistoryLimit) {
+    pub fn restore(
+        &mut self,
+        connection: &ConnectionName,
+        stored: Vec<Entry>,
+        limit: HistoryLimit,
+    ) {
         let mut history = History::default();
 
-        for statement in stored.iter().rev() {
-            history.record(statement, limit);
+        for entry in stored.into_iter().rev() {
+            history.record(entry, limit);
         }
 
         self.0.insert(connection.clone(), history);
     }
 
     #[must_use]
-    pub fn of(&self, connection: &ConnectionName) -> &[String] {
+    pub fn of(&self, connection: &ConnectionName) -> &[Entry] {
         self.0.get(connection).map_or(&[], History::entries)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.values().all(|history| history.entries.is_empty())
+    }
+
+    /// Newest first, each statement once: a statement asked on several
+    /// connections, or several times, is its newest run. An entry without a
+    /// time sorts after every entry with one.
+    #[must_use]
+    pub fn recall(
+        &self,
+        layer: Layer,
+        connection: Option<&ConnectionName>,
+        engine: Engine,
+    ) -> Vec<Recalled<'_>> {
+        let mut recalled: Vec<Recalled<'_>> = self
+            .0
+            .iter()
+            .filter(|(name, _)| layer != Layer::Connection || Some(*name) == connection)
+            .flat_map(|(name, history)| {
+                history.entries.iter().map(move |entry| Recalled {
+                    connection: name,
+                    entry,
+                })
+            })
+            .filter(|recalled| layer != Layer::Engine || recalled.entry.engine == engine)
+            .collect();
+
+        // Stable, so equal times keep connection order, then the file's.
+        recalled.sort_by_key(|recalled| std::cmp::Reverse(recalled.entry.at));
+
+        let mut seen = BTreeSet::new();
+        recalled.retain(|recalled| seen.insert(folded(&recalled.entry.statement)));
+        recalled
     }
 }
 
@@ -83,10 +187,14 @@ pub fn one_line(statement: &str) -> String {
     statement.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Folded as SQL whatever the connection: both languages fold unquoted names
-/// and keywords alike, and the store restores entries without an engine.
+/// Folded as SQL whatever the engine: both languages fold unquoted names and
+/// keywords alike, so one statement is one row across engines too.
+fn folded(statement: &str) -> String {
+    fold(Engine::Postgres, statement)
+}
+
 fn same(left: &str, right: &str) -> bool {
-    fold(Engine::Postgres, left) == fold(Engine::Postgres, right)
+    folded(left) == folded(right)
 }
 
 #[cfg(test)]
@@ -101,119 +209,163 @@ mod tests {
         ConnectionName::try_new(name).expect("a valid name")
     }
 
+    fn at(statement: &str, seconds: u64) -> Entry {
+        Entry {
+            at: Some(Stamp::from_unix(seconds)),
+            ..Entry::bare(statement, Engine::Postgres)
+        }
+    }
+
+    fn on(engine: Engine, statement: &str, seconds: u64) -> Entry {
+        Entry {
+            engine,
+            ..at(statement, seconds)
+        }
+    }
+
+    fn statements(history: &History) -> Vec<&str> {
+        history
+            .entries()
+            .iter()
+            .map(|entry| entry.statement.as_str())
+            .collect()
+    }
+
+    fn recorded(statements: &[&str], rows: u32) -> History {
+        let mut history = History::default();
+
+        for statement in statements {
+            history.record(Entry::bare(statement, Engine::Postgres), limit(rows));
+        }
+
+        history
+    }
+
     #[test]
     fn the_newest_statement_comes_first() {
-        let mut history = History::default();
-        history.record("SELECT 1;", limit(10));
-        history.record("SELECT 2;", limit(10));
+        let history = recorded(&["SELECT 1;", "SELECT 2;"], 10);
 
-        assert_eq!(history.entries(), ["SELECT 2;", "SELECT 1;"]);
+        assert_eq!(statements(&history), ["SELECT 2;", "SELECT 1;"]);
     }
 
     #[test]
     fn a_statement_asked_again_after_another_is_kept_again() {
-        let mut history = History::default();
-        history.record("SELECT 1;", limit(10));
-        history.record("SELECT 2;", limit(10));
-        history.record("SELECT 1;", limit(10));
+        let history = recorded(&["SELECT 1;", "SELECT 2;", "SELECT 1;"], 10);
 
-        assert_eq!(history.entries(), ["SELECT 1;", "SELECT 2;", "SELECT 1;"]);
+        assert_eq!(
+            statements(&history),
+            ["SELECT 1;", "SELECT 2;", "SELECT 1;"]
+        );
     }
 
     #[test]
     fn a_repeat_differing_in_keyword_or_name_case_replaces_the_newest() {
-        let mut history = History::default();
-        history.record("SELECT * FROM Shop.Orders;", limit(10));
-        history.record("select * from shop.orders;", limit(10));
+        let history = recorded(
+            &["SELECT * FROM Shop.Orders;", "select * from shop.orders;"],
+            10,
+        );
 
-        assert_eq!(history.entries(), ["select * from shop.orders;"]);
+        assert_eq!(statements(&history), ["select * from shop.orders;"]);
+    }
+
+    #[test]
+    fn a_repeat_of_the_newest_moves_its_time() {
+        let mut history = History::default();
+        history.record(at("SELECT 1;", 100), limit(10));
+        history.record(at("SELECT 1;", 200), limit(10));
+
+        assert_eq!(history.entries(), [at("SELECT 1;", 200)]);
     }
 
     #[test]
     fn case_inside_a_literal_or_a_quoted_name_is_a_different_statement() {
-        let mut history = History::default();
-        history.record("SELECT * FROM t WHERE a = 'X';", limit(10));
-        history.record("SELECT * FROM t WHERE a = 'x';", limit(10));
-        history.record("SELECT * FROM \"T\";", limit(10));
-        history.record("SELECT * FROM \"t\";", limit(10));
+        let history = recorded(
+            &[
+                "SELECT * FROM t WHERE a = 'X';",
+                "SELECT * FROM t WHERE a = 'x';",
+                "SELECT * FROM \"T\";",
+                "SELECT * FROM \"t\";",
+            ],
+            10,
+        );
 
         assert_eq!(history.entries().len(), 4);
     }
 
     #[test]
     fn surrounding_whitespace_does_not_make_a_statement_new() {
-        let mut history = History::default();
-        history.record("SELECT 1;", limit(10));
-        history.record("  SELECT 1;\n", limit(10));
+        let history = recorded(&["SELECT 1;", "  SELECT 1;\n"], 10);
 
-        assert_eq!(history.entries(), ["SELECT 1;"]);
+        assert_eq!(statements(&history), ["SELECT 1;"]);
     }
 
     #[test]
     fn a_blank_statement_is_not_an_entry() {
-        let mut history = History::default();
-        history.record(" \n\t", limit(10));
+        let history = recorded(&[" \n\t"], 10);
 
         assert!(history.entries().is_empty());
     }
 
     #[test]
     fn the_oldest_entries_fall_off_past_the_limit() {
-        let mut history = History::default();
+        let history = recorded(&["SELECT 1;", "SELECT 2;", "SELECT 3;", "SELECT 4;"], 3);
 
-        for n in 1..=4 {
-            history.record(&format!("SELECT {n};"), limit(3));
-        }
-
-        assert_eq!(history.entries(), ["SELECT 4;", "SELECT 3;", "SELECT 2;"]);
+        assert_eq!(
+            statements(&history),
+            ["SELECT 4;", "SELECT 3;", "SELECT 2;"]
+        );
     }
 
     #[test]
     fn lowering_the_limit_trims_on_the_next_record() {
-        let mut history = History::default();
+        let mut history = recorded(&["SELECT 1;", "SELECT 2;", "SELECT 3;", "SELECT 4;"], 10);
+        history.record(Entry::bare("SELECT 5;", Engine::Postgres), limit(2));
 
-        for n in 1..=4 {
-            history.record(&format!("SELECT {n};"), limit(10));
-        }
-        history.record("SELECT 5;", limit(2));
-
-        assert_eq!(history.entries(), ["SELECT 5;", "SELECT 4;"]);
+        assert_eq!(statements(&history), ["SELECT 5;", "SELECT 4;"]);
     }
 
     #[test]
     fn each_connection_keeps_its_own() {
         let mut histories = Histories::default();
-        histories.record(&name("dev"), "SELECT 1;", limit(10));
-        histories.record(&name("prod"), "SELECT 2;", limit(10));
+        histories.record(&name("dev"), at("SELECT 1;", 1), limit(10));
+        histories.record(&name("prod"), at("SELECT 2;", 2), limit(10));
 
-        assert_eq!(histories.of(&name("dev")), ["SELECT 1;"]);
-        assert_eq!(histories.of(&name("prod")), ["SELECT 2;"]);
+        assert_eq!(histories.of(&name("dev")), [at("SELECT 1;", 1)]);
+        assert_eq!(histories.of(&name("prod")), [at("SELECT 2;", 2)]);
         assert!(histories.of(&name("stage")).is_empty());
     }
 
     #[test]
     fn recording_says_whether_anything_changed() {
         let mut history = History::default();
+        let mut record = |entry| history.record(entry, limit(10));
 
-        assert!(history.record("SELECT 1;", limit(10)));
-        assert!(
-            !history.record("SELECT 1;", limit(10)),
-            "already the newest"
-        );
-        assert!(history.record("SELECT 2;", limit(10)));
-        assert!(history.record("SELECT 1;", limit(10)), "not the newest");
-        assert!(history.record("select 1;", limit(10)), "case replaced");
-        assert!(!history.record("  ", limit(10)));
+        assert!(record(at("SELECT 1;", 1)));
+        assert!(!record(at("SELECT 1;", 1)), "the same run");
+        assert!(record(at("SELECT 1;", 2)), "a later run");
+        assert!(record(at("SELECT 2;", 3)));
+        assert!(record(at("SELECT 1;", 4)), "not the newest");
+        assert!(record(at("select 1;", 4)), "case replaced");
+        assert!(!record(at("  ", 5)));
     }
 
     #[test]
     fn restoring_keeps_a_stores_order_and_applies_the_limit() {
         let mut histories = Histories::default();
-        let stored = ["SELECT 3;", "SELECT 2;", "select 2;", "SELECT 1;"].map(str::to_owned);
+        let stored = ["SELECT 3;", "SELECT 2;", "select 2;", "SELECT 1;"]
+            .map(|statement| Entry::bare(statement, Engine::Postgres))
+            .to_vec();
 
-        histories.restore(&name("dev"), &stored, limit(2));
+        histories.restore(&name("dev"), stored, limit(2));
 
-        assert_eq!(histories.of(&name("dev")), ["SELECT 3;", "SELECT 2;"]);
+        assert_eq!(
+            histories
+                .of(&name("dev"))
+                .iter()
+                .map(|entry| entry.statement.as_str())
+                .collect::<Vec<_>>(),
+            ["SELECT 3;", "SELECT 2;"]
+        );
     }
 
     #[test]
@@ -221,6 +373,139 @@ mod tests {
         assert_eq!(
             one_line("SELECT *\n  FROM shop.orders\n  WHERE id = 1;"),
             "SELECT * FROM shop.orders WHERE id = 1;"
+        );
+    }
+
+    fn layered() -> Histories {
+        let mut histories = Histories::default();
+        let mut record = |connection: &str, entry| {
+            histories.record(&name(connection), entry, limit(10));
+        };
+
+        record("staging", on(Engine::Postgres, "SELECT 1;", 10));
+        record("prod", on(Engine::Postgres, "SELECT 2;", 20));
+        record("events", on(Engine::Cassandra, "SELECT 3;", 30));
+        record("staging", on(Engine::Postgres, "SELECT 4;", 40));
+        histories
+    }
+
+    fn recalled(histories: &Histories, layer: Layer, connection: &str) -> Vec<(String, String)> {
+        histories
+            .recall(layer, Some(&name(connection)), Engine::Postgres)
+            .into_iter()
+            .map(|recalled| {
+                (
+                    recalled.connection.as_str().to_owned(),
+                    recalled.entry.statement.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn pairs(of: &[(&str, &str)]) -> Vec<(String, String)> {
+        of.iter()
+            .map(|(connection, statement)| ((*connection).to_owned(), (*statement).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn the_connection_layer_is_that_connections_own() {
+        assert_eq!(
+            recalled(&layered(), Layer::Connection, "staging"),
+            pairs(&[("staging", "SELECT 4;"), ("staging", "SELECT 1;")])
+        );
+    }
+
+    #[test]
+    fn the_engine_layer_interleaves_every_connection_on_the_engine_by_time() {
+        assert_eq!(
+            recalled(&layered(), Layer::Engine, "staging"),
+            pairs(&[
+                ("staging", "SELECT 4;"),
+                ("prod", "SELECT 2;"),
+                ("staging", "SELECT 1;"),
+            ])
+        );
+    }
+
+    #[test]
+    fn the_last_layer_is_everything() {
+        assert_eq!(
+            recalled(&layered(), Layer::All, "staging"),
+            pairs(&[
+                ("staging", "SELECT 4;"),
+                ("events", "SELECT 3;"),
+                ("prod", "SELECT 2;"),
+                ("staging", "SELECT 1;"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_statement_asked_on_several_connections_is_recalled_once_as_its_newest_run() {
+        let mut histories = layered();
+        histories.record(
+            &name("prod"),
+            on(Engine::Postgres, "select 1;", 50),
+            limit(10),
+        );
+
+        assert_eq!(
+            recalled(&histories, Layer::Engine, "staging"),
+            pairs(&[
+                ("prod", "select 1;"),
+                ("staging", "SELECT 4;"),
+                ("prod", "SELECT 2;"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_statement_asked_twice_on_one_connection_is_recalled_once() {
+        let histories = {
+            let mut histories = Histories::default();
+            for (statement, seconds) in [("SELECT 1;", 1), ("SELECT 2;", 2), ("SELECT 1;", 3)] {
+                histories.record(&name("dev"), at(statement, seconds), limit(10));
+            }
+            histories
+        };
+
+        assert_eq!(
+            recalled(&histories, Layer::Connection, "dev"),
+            pairs(&[("dev", "SELECT 1;"), ("dev", "SELECT 2;")])
+        );
+    }
+
+    #[test]
+    fn an_entry_without_a_time_sorts_after_those_with_one() {
+        let mut histories = Histories::default();
+        histories.restore(
+            &name("old"),
+            vec![Entry::bare("SELECT 'old';", Engine::Postgres)],
+            limit(10),
+        );
+        histories.record(&name("new"), at("SELECT 'new';", 1), limit(10));
+
+        assert_eq!(
+            recalled(&histories, Layer::All, "new"),
+            pairs(&[("new", "SELECT 'new';"), ("old", "SELECT 'old';")])
+        );
+    }
+
+    #[test]
+    fn without_a_connection_the_connection_layer_is_empty() {
+        assert!(
+            layered()
+                .recall(Layer::Connection, None, Engine::Postgres)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn layers_cycle_back_to_the_narrowest() {
+        assert_eq!(
+            Layer::ALL.map(Layer::next),
+            [Layer::Engine, Layer::All, Layer::Connection]
         );
     }
 }

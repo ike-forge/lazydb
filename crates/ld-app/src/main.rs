@@ -160,7 +160,7 @@ async fn run(
     // Loaded here, not by an effect: `init` runs before the loop can answer
     // one.
     let store: Arc<dyn Store> = Arc::new(ld_outbound::history::FileStore::from_env());
-    let (histories, history_diagnostics) = store.load(config.history.limit).await;
+    let (histories, history_diagnostics) = store.load(&config).await;
     diagnostics.extend(history_diagnostics);
     let themes = Themes::new(&config.themes, config.background);
 

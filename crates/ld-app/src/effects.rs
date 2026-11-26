@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ld_domain::config::{ConnectionConfig, ConnectionName, DriverConfig};
+use ld_domain::history::Entry;
 use ld_domain::model::{ConnId, DbError, Page, QueryId};
 use ld_domain::ports::{ConfigSink, Database, Store, Writer};
 use ld_domain::{Effect, Msg};
@@ -239,7 +240,7 @@ async fn save_history(
     tx: UnboundedSender<Incoming>,
     store: Arc<dyn Store>,
     connection: ConnectionName,
-    entries: Vec<String>,
+    entries: Vec<Entry>,
 ) {
     if let Err(error) = store.save(&connection, &entries).await {
         // A closed channel means the main loop has ended.
@@ -254,8 +255,8 @@ async fn save_history(
 
 #[cfg(test)]
 mod tests {
-    use ld_domain::config::{Diagnostic, HistoryLimit};
-    use ld_domain::history::Histories;
+    use ld_domain::config::{Config, Diagnostic};
+    use ld_domain::history::{Entry, Histories};
     use ld_domain::ports::{ConfigSink, ConfigWriteError, StoreError};
     use ld_domain::theme::{Ours, ThemeChoice};
 
@@ -324,14 +325,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Store for Disk {
-        async fn load(&self, _limit: HistoryLimit) -> (Histories, Vec<Diagnostic>) {
+        async fn load(&self, _config: &Config) -> (Histories, Vec<Diagnostic>) {
             (Histories::default(), Vec::new())
         }
 
         async fn save(
             &self,
             _connection: &ConnectionName,
-            _entries: &[String],
+            _entries: &[Entry],
         ) -> Result<(), StoreError> {
             self.0.clone()
         }
@@ -349,7 +350,7 @@ mod tests {
             tx,
             Arc::new(Disk(Ok(()))),
             name(),
-            vec!["SELECT 1;".to_owned()],
+            vec![Entry::bare("SELECT 1;", ld_domain::Engine::Postgres)],
         )
         .await;
 

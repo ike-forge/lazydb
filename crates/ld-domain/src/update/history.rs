@@ -16,7 +16,7 @@ pub(crate) fn history_labels(state: &State) -> Vec<String> {
     state
         .history()
         .iter()
-        .map(|entry| one_line(entry))
+        .map(|entry| one_line(&entry.statement))
         .collect()
 }
 
@@ -149,5 +149,5 @@ fn append(state: &mut State) {
     };
 
     state.overlay = None;
-    state.queries.append(&entry);
+    state.queries.append(&entry.statement);
 }

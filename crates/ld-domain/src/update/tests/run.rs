@@ -33,7 +33,13 @@ fn ctrl_r_runs_the_query_buffer() {
             ))),
             Effect::SaveHistory {
                 connection: ConnectionName::try_new("local").expect("a valid name"),
-                entries: vec!["SELECT * FROM shop.orders".to_owned()],
+                entries: vec![crate::history::Entry {
+                    at: Some(crate::clock::Stamp::default()),
+                    ..crate::history::Entry::bare(
+                        "SELECT * FROM shop.orders",
+                        crate::Engine::Postgres
+                    )
+                }],
             },
         ]
     );
