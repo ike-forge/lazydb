@@ -172,6 +172,36 @@ impl Editor {
         self.settle();
     }
 
+    /// To the start of the word before the cursor, crossing line breaks.
+    pub fn word_left(&mut self) {
+        let text: Vec<char> = self.text().chars().collect();
+        let mut at = self.offset();
+
+        while at > 0 && !is_word(text[at - 1]) {
+            at -= 1;
+        }
+        while at > 0 && is_word(text[at - 1]) {
+            at -= 1;
+        }
+
+        self.go_to_offset(at);
+    }
+
+    /// To the end of the word after the cursor, crossing line breaks.
+    pub fn word_right(&mut self) {
+        let text: Vec<char> = self.text().chars().collect();
+        let mut at = self.offset();
+
+        while at < text.len() && !is_word(text[at]) {
+            at += 1;
+        }
+        while at < text.len() && is_word(text[at]) {
+            at += 1;
+        }
+
+        self.go_to_offset(at);
+    }
+
     pub fn up(&mut self) {
         self.go_to_line(self.cursor.line.saturating_sub(1));
     }
@@ -248,6 +278,11 @@ impl Editor {
     fn settle(&mut self) {
         self.desired_column = self.cursor.column;
     }
+}
+
+/// An identifier's characters, so `shop.orders` is two words and `>=` none.
+fn is_word(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
 }
 
 #[cfg(test)]
@@ -667,5 +702,34 @@ mod tests {
         editor.insert('!');
 
         assert_eq!(editor.text(), "FROM t!");
+    }
+
+    #[test]
+    fn a_word_motion_stops_at_either_end_of_an_identifier() {
+        let mut editor = typed("SELECT id FROM shop.orders");
+
+        editor.word_left();
+        assert_eq!(editor.offset(), 20, "after the dot");
+        editor.word_left();
+        assert_eq!(editor.offset(), 15, "the dot splits a qualified name");
+        editor.word_right();
+        assert_eq!(editor.offset(), 19);
+    }
+
+    #[test]
+    fn a_word_motion_crosses_line_breaks_and_stops_at_the_buffer_ends() {
+        let mut editor = typed("SELECT id\n  FROM t");
+        editor.line_start();
+
+        editor.word_left();
+        assert_eq!(editor.cursor(), Position { line: 0, column: 7 });
+        editor.word_left();
+        editor.word_left();
+        assert_eq!(editor.offset(), 0);
+
+        editor.go_to_offset(13);
+        editor.word_right();
+        editor.word_right();
+        assert_eq!(editor.cursor(), Position { line: 1, column: 8 });
     }
 }

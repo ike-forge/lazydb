@@ -21,6 +21,29 @@ fn offered(state: &State) -> Vec<String> {
 }
 
 #[test]
+fn ctrl_arrows_hop_words_and_take_the_popup_down() {
+    let mut state = editing("SELECT * FROM shop.o");
+
+    press_binding(&mut state, KeyPress::ctrl(Key::Left));
+    assert_eq!(state.queries.buffer().offset(), 19);
+    assert!(state.queries.completion().is_none());
+
+    press_binding(&mut state, KeyPress::ctrl(Key::Left));
+    press_binding(&mut state, KeyPress::ctrl(Key::Right));
+    assert_eq!(state.queries.buffer().offset(), 18);
+}
+
+#[test]
+fn ctrl_arrows_leave_a_closed_buffer_alone() {
+    let mut state = editing("SELECT 1");
+    press(&mut state, Key::Escape);
+
+    press_binding(&mut state, KeyPress::ctrl(Key::Left));
+
+    assert_eq!(state.queries.buffer().offset(), 8);
+}
+
+#[test]
 fn ctrl_f_lays_the_buffer_out() {
     let mut state = editing("select * from shop.orders where id = 7");
 

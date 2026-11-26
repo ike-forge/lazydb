@@ -302,6 +302,12 @@ pub(super) fn walk_completion(state: &mut State, forwards: bool) {
     }
 }
 
+fn hop(state: &mut State, forwards: bool) {
+    if state.focus() == Panel::Queries {
+        state.queries.hop(forwards);
+    }
+}
+
 /// One rung per press: the thing most recently put on screen comes off first.
 pub(super) fn escape(state: &mut State) {
     if dismiss_overlay(state) || cancel_connecting(state) {
@@ -531,6 +537,10 @@ pub(super) fn ctrl_key(state: &mut State, key: Key) -> Vec<Effect> {
         }
         Key::Char('p') => {
             walk_completion(state, false);
+            Vec::new()
+        }
+        Key::Left | Key::Right => {
+            hop(state, key == Key::Right);
             Vec::new()
         }
         _ => Vec::new(),

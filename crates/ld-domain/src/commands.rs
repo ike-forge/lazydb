@@ -411,6 +411,8 @@ const QUERIES: &[Command] = &[
     ),
     Command::new(&[Stroke::key(Key::Home)], "line start", Run::Editing),
     Command::new(&[Stroke::key(Key::End)], "line end", Run::Editing),
+    Command::new(&[Stroke::ctrl(Key::Left)], "previous word", Run::Editing),
+    Command::new(&[Stroke::ctrl(Key::Right)], "next word", Run::Editing),
 ];
 
 pub const CATALOGUE: &[Group] = &[

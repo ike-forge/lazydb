@@ -341,6 +341,22 @@ impl QueriesPanel {
         Some(Refresh::Recompute)
     }
 
+    /// `false` while the buffer is closed.
+    pub fn hop(&mut self, forwards: bool) -> bool {
+        if !self.is_editing() {
+            return false;
+        }
+
+        let motion: fn(&mut Editor) = if forwards {
+            Editor::word_right
+        } else {
+            Editor::word_left
+        };
+        self.moved(motion);
+
+        true
+    }
+
     /// Leaves the word the offers were made against.
     fn moved(&mut self, motion: impl Fn(&mut Editor)) -> Refresh {
         motion(&mut self.buffer);
